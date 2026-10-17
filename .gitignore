@@ -41,6 +41,9 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
+# Tests (kept local)
+backend/tests/
+
 # Runtime data (vaults and replays ARE committed)
 data/cache/
 data/runs/
