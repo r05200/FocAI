@@ -40,7 +40,7 @@ async def get_item(item_id: str, store: Store) -> VaultItemView:
 async def ingest_item(body: IngestRequest, store: Store) -> IngestResult:
     """Ingest text: the vault LLM writes a title, summary blurb and tags; the item is embedded,
     linked to its nearest neighbors, and each link is labelled contradicts / supports /
-    agrees / unrelated with a one-line reason."""
+    agrees with a one-line reason. Neighbors judged unrelated get no link."""
     try:
         return await store.ingest(body)
     except LLMError as e:

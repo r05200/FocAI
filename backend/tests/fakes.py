@@ -38,7 +38,7 @@ class FakeLLM:
             value = IngestDraft(title=" ".join(words[:5]), summary=text[:80],
                                 tags=["Long Context", "kv cache", "long-context"])
         elif schema is RelationOutput:
-            ids = re.findall(r"neighbor_id: (\S+)", prompt)
+            ids = re.findall(r"^(v_\w+) \(", prompt, re.MULTILINE)
             value = RelationOutput(relations=[
                 RelationJudgement(neighbor_id=i, relation=self.relation,
                                   reason="Fake reason\nspanning lines.") for i in ids])

@@ -93,8 +93,6 @@ def _vault_graph(items: list[VaultItemView]) -> VaultGraph:
     edges = [
         edge("v_a3", "v_a1", 0.83, "supports",
              "The survey's quantization results bear directly on the recall question."),
-        edge("v_a2", "v_a1", 0.55, "unrelated",
-             "Both mention decoding cost, but neither speaks to the other's claim."),
         edge("v_b2", "v_a2", 0.79, "contradicts",
              "Bob says latency framing still matters; Alice's note says the topic is settled."),
         edge("v_b2", "v_b1", 0.58, "agrees",

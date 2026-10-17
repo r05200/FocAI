@@ -56,7 +56,14 @@ async def test_title_override_wins(store):
     assert res.item.title == "My own title"
 
 
-async def test_missing_judgement_falls_back_to_unrelated(store, fake_llm, monkeypatch):
+async def test_unrelated_judgement_creates_no_edge(store, fake_llm):
+    await store.ingest(req(KV))
+    fake_llm.relation = "unrelated"
+    res = await store.ingest(req(KV2))
+    assert res.edges == [] and store.graph().edges == []
+
+
+async def test_missing_judgement_creates_no_edge(store, fake_llm, monkeypatch):
     await store.ingest(req(KV))
     original = fake_llm.generate
 
@@ -67,8 +74,7 @@ async def test_missing_judgement_falls_back_to_unrelated(store, fake_llm, monkey
         return out
 
     monkeypatch.setattr(fake_llm, "generate", drop_relations)
-    [edge] = (await store.ingest(req(KV2))).edges
-    assert edge.relation == "unrelated"
+    assert (await store.ingest(req(KV2))).edges == []
 
 
 async def test_store_persists_and_reloads(store, cfg, fake_llm):

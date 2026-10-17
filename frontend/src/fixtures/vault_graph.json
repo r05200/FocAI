@@ -98,13 +98,6 @@
       "reason": "The survey's quantization results bear directly on the recall question."
     },
     {
-      "source": "v_a2",
-      "target": "v_a1",
-      "weight": 0.55,
-      "relation": "unrelated",
-      "reason": "Both mention decoding cost, but neither speaks to the other's claim."
-    },
-    {
       "source": "v_b2",
       "target": "v_a2",
       "weight": 0.79,

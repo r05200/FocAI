@@ -17,8 +17,10 @@ from pydantic import BaseModel, Field, computed_field
 VaultKind = Literal["paper", "note", "question", "correction", "learned"]
 # How a newly ingested item relates to one of its nearest neighbors, as judged by the vault LLM.
 # supports = gives evidence for the other's claim; agrees = reaches the same view independently;
-# contradicts = the claims conflict; unrelated = similar wording or topic, but no bearing.
-VaultRelation = Literal["contradicts", "supports", "agrees", "unrelated"]
+# contradicts = the claims conflict. The LLM may also answer "unrelated" (similar wording or topic,
+# no bearing); such pairs are not stored as edges, so VaultEdge.relation never has that value.
+VaultRelation = Literal["contradicts", "supports", "agrees"]
+VaultJudgement = Literal["contradicts", "supports", "agrees", "unrelated"]
 PERSON_PATTERN = r"^[a-z0-9_-]{1,32}$"  # also used as a filename
 NodeType = Literal["hypothesis", "experiment", "reading"]
 # pending = proposed and passed pre-scoring, waiting to run; pruned covers both pre- and

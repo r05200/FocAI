@@ -3,7 +3,7 @@
 // tests (backend/tests), so a drift shows up there first.
 
 export type VaultKind = 'paper' | 'note' | 'question' | 'correction' | 'learned'
-export type VaultRelation = 'contradicts' | 'supports' | 'agrees' | 'unrelated'
+export type VaultRelation = 'contradicts' | 'supports' | 'agrees'
 export type NodeType = 'hypothesis' | 'experiment' | 'reading'
 export type NodeStatus = 'pending' | 'running' | 'done' | 'pruned' | 'failed'
 export type Verdict = 'keep' | 'prune'

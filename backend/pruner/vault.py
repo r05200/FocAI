@@ -6,8 +6,7 @@ Ingest pipeline for one item:
   3. Its nearest existing items (any person) with cosine similarity >= cfg.link_threshold,
      at most cfg.neighbors_per_item of them, become candidate links.
   4. The vault LLM labels each link contradicts / supports / agrees / unrelated, with a
-     one-line reason. Every candidate becomes an edge; "unrelated" edges are kept so the UI
-     can show them faintly.
+     one-line reason. Pairs judged "unrelated" (or not judged) get no edge.
 
 Storage: data/vaults/<person>.json holds that person's items (with embeddings);
 data/vaults/_edges.json holds every edge. Files are rewritten atomically after each ingest.
@@ -33,7 +32,7 @@ from .models import (
     VaultEdge,
     VaultGraph,
     VaultItem,
-    VaultRelation,
+    VaultJudgement,
 )
 
 log = logging.getLogger(__name__)
@@ -54,7 +53,7 @@ class IngestDraft(BaseModel):
 
 class RelationJudgement(BaseModel):
     neighbor_id: str
-    relation: VaultRelation
+    relation: VaultJudgement
     reason: str
 
 
@@ -187,10 +186,8 @@ class VaultStore:
                       neighbors: list[tuple[VaultItem, float]]) -> list[VaultEdge]:
         if not neighbors:
             return []
-        listing = "\n\n".join(
-            f"- neighbor_id: {n.id}\n  kind: {n.kind}, from {n.person}\n"
-            f"  Title: {n.title}\n  Summary: {n.summary}"
-            for n, _ in neighbors
+        listing = "\n".join(
+            f"{n.id} ({n.kind}, {n.person}): {n.title}. {n.summary}" for n, _ in neighbors
         )
         out = (await self.llm.generate(
             RelationOutput,
@@ -204,10 +201,8 @@ class VaultStore:
         for n, sim in neighbors:
             j = judged.get(n.id)
             if j is None:
-                log.warning("vault LLM gave no relation for neighbor %s", n.id)
-                relation, reason = "unrelated", "No judgement returned by the vault model."
-            else:
-                relation, reason = j.relation, one_line(j.reason)
-            edges.append(VaultEdge(source=item.id, target=n.id, weight=round(sim, 4),
-                                   relation=relation, reason=reason))
+                log.warning("vault LLM gave no relation for neighbor %s; no edge", n.id)
+            elif j.relation != "unrelated":
+                edges.append(VaultEdge(source=item.id, target=n.id, weight=round(sim, 4),
+                                       relation=j.relation, reason=one_line(j.reason)))
         return edges
