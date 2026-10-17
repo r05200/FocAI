@@ -26,7 +26,7 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import Collection
+from collections.abc import Collection, Iterable
 from pathlib import Path
 from typing import Literal
 
@@ -278,6 +278,19 @@ class VaultStore:
         sims = matrix @ unit_vectors(np.array(embedding, dtype=np.float32))
         order = np.argsort(-sims)[:k]
         return [(pool[j], float(sims[j])) for j in order if sims[j] >= threshold]
+
+    def record_retrieval(self, item_ids: Iterable[str]) -> None:
+        """Count one retrieval for every id in `item_ids` (repeat an id to count it again): the
+        notes an LLM was just shown, whether the agent's tool, a scorer or a research search
+        took them out of the vault. Saved at once. Unknown ids are ignored. (Looking up an
+        ingested item's neighbors to label its links is not a retrieval.)"""
+        people = set()
+        for item_id in item_ids:
+            if (item := self._items.get(item_id)) is not None:
+                item.retrieval_count += 1
+                people.add(item.person)
+        for person in people:
+            self._save(person)
 
     def edges_of(self, item_ids: Collection[str],
                  people: Collection[str] | None = None) -> list[VaultEdge]:

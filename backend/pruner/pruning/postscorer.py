@@ -12,7 +12,7 @@ For one node that has run (node.result is set):
 Like the prescorer, this only judges: the agent loop decides what to do with the result, usually
 by calling apply() on the node. The judge interprets; it does not choose the next step.
 
-TODO(agent loop): emit VaultRetrieved for PostScored.retrieved and bump retrieval_count.
+Every vault note shown to the judge counts as one retrieval (VaultStore.record_retrieval).
 """
 
 from __future__ import annotations
@@ -69,6 +69,7 @@ class PostScorer:
                                        task="RETRIEVAL_QUERY", purpose="scorer_embed")
         hits = self.vault.nearest(query, k=self.cfg.search_top_k,
                                   threshold=self.cfg.similarity_threshold, people=people)
+        self.vault.record_retrieval(i.id for i, _ in hits)
         shown = {i.id for i, _ in hits}
 
         prompt = prompts.render(

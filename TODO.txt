@@ -61,9 +61,10 @@ it needs, and what milestone or session it came from.
 [ ] Code only tests call (kept on purpose): LLM.is_stopped, PreScorer.apply_rescore,
     RunManager.is_running, EventBus.subscribers. Delete them if you want a leaner backend.
 
-[ ] The pre- and post-scorers' vault searches do not emit VaultRetrieved events or bump
-    retrieval_count (TODO(agent loop) in backend/pruner/pruning/prescorer.py and postscorer.py);
-    research experiments emit the event, but nothing bumps retrieval_count anywhere.
+[x] retrieval_count is bumped whenever a note is shown to an LLM (the agent's search_vault tool,
+    including linked notes; the pre- and post-scorers; research searches). Linking a new item to
+    its neighbors does not count. Deliberately NOT done: scorers do not send VaultRetrieved
+    events (only the agent tool and research searches do).
 
 [ ] Optional: ruff --select PLR0913 flags 25 functions with more than 5 arguments (mostly
     pruning/prescorer.py). Style only.

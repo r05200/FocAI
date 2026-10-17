@@ -20,7 +20,7 @@ instruction needs that a node did not measure (applied by orchestrator/steering.
 The prescorer only judges: the agent loop decides what to do with the zones, usually by
 calling apply() on each node and then running the survivors. The judge never sees results; it rates how promising the next step is.
 
-TODO(agent loop): emit VaultRetrieved for PreScored.retrieved and bump retrieval_count.
+Every vault note shown to the judge counts as one retrieval (VaultStore.record_retrieval).
 """
 
 from __future__ import annotations
@@ -297,9 +297,11 @@ class PreScorer:
     async def _search(self, nodes: Sequence[Node], people: Sequence[str]) -> list[list]:
         queries = await self.llm.embed([n.description for n in nodes], task="RETRIEVAL_QUERY",
                                        purpose="scorer_embed")
-        return [self.vault.nearest(q, k=self.cfg.search_top_k,
+        hits = [self.vault.nearest(q, k=self.cfg.search_top_k,
                                    threshold=self.cfg.similarity_threshold, people=people)
                 for q in queries]
+        self.vault.record_retrieval(i.id for node_hits in hits for i, _ in node_hits)
+        return hits
 
     @staticmethod
     def _vault_lines(people: Sequence[str], node_hits: list) -> list[str]:

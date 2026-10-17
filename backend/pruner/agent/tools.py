@@ -175,6 +175,8 @@ def search_vault_tool(ctx: ToolContext) -> Tool:
         }
         if not hits:
             out["note"] = "No note is close enough to the query; rely on your own judgement."
+        ctx.vault.record_retrieval([*(i.id for i, _ in hits),
+                                    *(i["id"] for i in out["linked_items"])])
         return _json(out)
 
     return Tool("search_vault",

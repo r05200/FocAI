@@ -102,6 +102,7 @@ class ResearchPhase:
         for query, vector in zip(queries, vectors, strict=True):
             hits = self.vault.nearest(vector, k=self.cfg.search_top_k,
                                       threshold=self.cfg.similarity_threshold, people=people)
+            self.vault.record_retrieval(i.id for i, _ in hits)
             if on_retrieved is not None:
                 on_retrieved(people, query, [i.id for i, _ in hits],
                              [round(float(s), 4) for _, s in hits])
