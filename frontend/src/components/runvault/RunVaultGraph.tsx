@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import { usePalette } from '../../hooks/usePalette'
 import { personSlot } from '../../lib/colors'
 import { CARD_H, CARD_W, makeCardSprite } from '../../lib/vaultSprites'
-import type { RunIdea } from '../../hooks/useRunVault'
+import type { RunIdea } from '../../types'
 import MindMap3D from '../vault/MindMap3D'
 
 interface IdeaNode {

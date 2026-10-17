@@ -113,6 +113,16 @@
 }
 
 /* Run tab: the root node pops in once the prompt bar has finished moving to the top. */
+/* Reveals a path from its start (used on a mask stroke with pathLength="1", see GrowEdge). */
+@keyframes edge-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
 @keyframes node-pop {
   from {
     opacity: 0;
@@ -128,4 +138,10 @@
 .react-flow {
   --xy-background-color: transparent;
   --xy-background-color-default: transparent;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
 }

@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState, type ComponentType, type FormEvent, type KeyboardEvent, type SVGProps } from 'react'
-import { addInstruction, isOffline, startRun } from '../../api/client'
+import { addInstruction, createRunVault, isOffline, startRun } from '../../api/client'
 import { useDirectivesIn } from '../../hooks/useDirectives'
 import { useVaultPeople } from '../../hooks/useVaultGraph'
+import { isLocalRun, newLocalRunId } from '../../lib/localRun'
+import { useVaultStore } from '../../store/vaultStore'
 import { selectPhase, useRunStore } from '../../store/runStore'
 import type { StartRunRequest } from '../../types'
-import { ArrowRightIcon, CloseIcon, DirectiveIcon, FileIcon, FolderIcon, ImageIcon, PlusIcon, StopIcon } from '../ui/Icons'
+import { ArrowRightIcon, CloseIcon, DirectiveIcon, FileIcon, FolderIcon, ImageIcon, PauseIcon, PlayIcon, PlusIcon, StopIcon } from '../ui/Icons'
 import DirectivesPicker from './DirectivesPicker'
 
 // FIXME(attachments): the attach options are a NON-FUNCTIONAL PLACEHOLDER. They're shown but
@@ -15,7 +17,6 @@ import DirectivesPicker from './DirectivesPicker'
 //   4. folders are the unresolved part: a browser can't reveal a folder's real path, and
 //      uploading a folder is wasteful when the backend can read the disk itself.
 // Stand-in run id until the backend creates runs (each placeholder run needs its own id).
-const placeholderRunId = () => `r_pending_${Date.now()}`
 
 const QUESTION_MIN = 3
 const QUESTION_MAX = 2000
@@ -39,12 +40,28 @@ export default function StartRunForm() {
   const [error, setError] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
   const people = useVaultPeople()
+  // The run is scored against the primary person's vault, so prefer someone the backend knows (the
+  // sample people, Alice and Bob, exist only in the browser).
+  const backendPeople = useVaultStore((s) => s.remote.vaults)
   const pool = useDirectivesIn(dirVaults)
   const chosen = pool.filter((d) => dirIds.includes(d.id))
   const phase = useRunStore(selectPhase)
   const begin = useRunStore((s) => s.begin)
   const stop = useRunStore((s) => s.stop)
+  const pause = useRunStore((s) => s.pause)
+  const resume = useRunStore((s) => s.resume)
   const busy = phase !== 'idle'
+  // Pause/Play shows once a run is going (and stays, disabled, while it's being stopped).
+  const canHold = phase === 'running' || phase === 'paused'
+
+  async function togglePause() {
+    setError(null)
+    try {
+      await (phase === 'paused' ? resume() : pause())
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not change the run.')
+    }
+  }
   const textarea = useRef<HTMLTextAreaElement>(null)
   const menu = useRef<HTMLDivElement>(null)
 
@@ -77,7 +94,7 @@ export default function StartRunForm() {
     const body: StartRunRequest = {
       question,
       // TODO: there's no signed-in user yet; the first vault stands in for "me".
-      primary_person: people[0],
+      primary_person: backendPeople[0]?.person ?? people[0],
       // The backend takes directive texts, not ids, and appends them to the prompts as-is.
       directives: chosen.map((d) => d.text),
     }
@@ -86,10 +103,13 @@ export default function StartRunForm() {
       const run = await startRun(body)
       // TODO: open GET /api/runs/{id}/events with an AbortController and pass it to begin().
       begin(run.id, question)
+      // Every run gets its own vault (the agent's discoveries), saved to disk with the run. Created
+      // here as well as lazily by the backend; a backend without the route just says 404.
+      createRunVault(run.id).catch((e) => console.debug('Run vault not created:', e))
     } catch (err) {
       // Backend not running at all: fall back to a placeholder run so the UI (Stop button, the run
       // list...) can still be exercised. Real backend errors are shown instead.
-      if (isOffline(err)) begin(placeholderRunId(), question)
+      if (isOffline(err)) begin(newLocalRunId(), question)
       else return setError(err instanceof Error ? err.message : 'Could not start the run.')
     }
     setPrompt('')
@@ -105,7 +125,7 @@ export default function StartRunForm() {
     if (!text || !runId) return
     setError(null)
     try {
-      if (!runId.startsWith('r_pending')) await addInstruction(runId, { text, directives: chosen.map((d) => d.text) })
+      if (!isLocalRun(runId)) await addInstruction(runId, { text, directives: chosen.map((d) => d.text) })
     } catch (err) {
       if (!isOffline(err)) return setError(err instanceof Error ? err.message : 'Could not send the instruction.')
     }
@@ -121,7 +141,7 @@ export default function StartRunForm() {
       // Enter sends; it never stops a run (too easy to hit by accident). While a run is going it
       // sends an instruction to that run.
       if (!busy) e.currentTarget.form?.requestSubmit()
-      else if (phase === 'running') void sendInstruction()
+      else if (canHold) void sendInstruction()
     }
   }
 
@@ -231,12 +251,26 @@ export default function StartRunForm() {
             ref={textarea}
             rows={1}
             value={prompt}
-            placeholder={phase === 'running' ? 'Send an instruction to this run…' : 'Ask a research question…'}
+            placeholder={canHold ? 'Send an instruction to this run…' : 'Ask a research question…'}
             aria-label="Research question"
             onChange={(e) => onInput(e.target.value)}
             onKeyDown={onKeyDown}
             className="max-h-50 min-h-9 flex-1 resize-none bg-transparent py-1.5 leading-6 outline-none placeholder:text-muted"
           />
+
+          {/* Pause / Play: only once a run is going. Stop (right) ends it for good. */}
+          {busy && (
+            <button
+              type="button"
+              aria-label={phase === 'paused' ? 'Resume' : 'Pause'}
+              title={phase === 'paused' ? 'Resume the run' : 'Pause the run after its current step'}
+              disabled={!canHold}
+              onClick={() => void togglePause()}
+              className="grid size-9 shrink-0 animate-[node-pop_300ms_var(--ease-zoom)_both] place-items-center rounded-full border border-line text-fg transition-colors hover:bg-hover disabled:opacity-30"
+            >
+              {phase === 'paused' ? <PlayIcon /> : <PauseIcon />}
+            </button>
+          )}
 
           <button
             type="submit"
@@ -249,6 +283,9 @@ export default function StartRunForm() {
           </button>
         </div>
       </div>
+      {phase === 'paused' && !error && (
+        <p className="mt-2 px-4 text-xs text-kind-note">Paused: the agent takes no further steps until you resume.</p>
+      )}
       {note && !error && <p className="mt-2 px-4 text-xs text-muted">{note}</p>}
       {(error || prompt.length >= QUESTION_MAX * 0.9) && (
         <div className="mt-2 flex items-start justify-between gap-3 px-4 text-xs">

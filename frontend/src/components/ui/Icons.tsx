@@ -251,3 +251,20 @@ export function LayoutIcon(props: SVGProps<SVGSVGElement>) {
     </Svg>
   )
 }
+
+export function PauseIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg width={14} height={14} fill="currentColor" stroke="none" {...props}>
+      <rect x="5" y="4" width="4.5" height="16" rx="1.2" />
+      <rect x="14.5" y="4" width="4.5" height="16" rx="1.2" />
+    </Svg>
+  )
+}
+
+export function PlayIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg width={14} height={14} fill="currentColor" stroke="none" {...props}>
+      <path d="M7 4.5v15a1 1 0 0 0 1.5.86l12-7.5a1 1 0 0 0 0-1.72l-12-7.5A1 1 0 0 0 7 4.5Z" />
+    </Svg>
+  )
+}

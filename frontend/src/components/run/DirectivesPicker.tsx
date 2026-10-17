@@ -2,12 +2,9 @@ import { useMemo, useState } from 'react'
 import { useDirectivesIn } from '../../hooks/useDirectives'
 import { useVaultPeople } from '../../hooks/useVaultGraph'
 import { personColor } from '../../lib/colors'
+import { formatDate } from '../../lib/format'
 import { CheckIcon } from '../ui/Icons'
 import Modal from '../ui/Modal'
-
-function formatDate(seconds: number) {
-  return new Date(seconds * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-}
 
 interface Props {
   vaults: string[]

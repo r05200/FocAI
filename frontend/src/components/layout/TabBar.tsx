@@ -1,12 +1,11 @@
 import type { ComponentType, SVGProps } from 'react'
 import { useUiStore, type TabId } from '../../store/uiStore'
-import { ChatIcon, HistoryIcon, IdeasIcon, SettingsIcon, VaultIcon } from '../ui/Icons'
+import { ChatIcon, HistoryIcon, SettingsIcon, VaultIcon } from '../ui/Icons'
 
 const TABS: Record<TabId, { label: string; Icon: ComponentType<SVGProps<SVGSVGElement>> }> = {
   run: { label: 'Research', Icon: ChatIcon },
   history: { label: 'History', Icon: HistoryIcon },
   vault: { label: 'Vault', Icon: VaultIcon },
-  runvault: { label: 'Run vault', Icon: IdeasIcon },
   settings: { label: 'Settings', Icon: SettingsIcon },
 }
 
@@ -41,7 +40,7 @@ function Tab({ id }: { id: TabId }) {
 }
 
 // Collapsed to an icon rail; hovering widens it. It's a flex sibling of the page, so the page
-// shrinks to make room (nothing gets covered). Research, History, Vault and Run vault sit at the top, Settings at the bottom.
+// shrinks to make room (nothing gets covered). Research, History and Vault sit at the top, Settings at the bottom.
 export default function TabBar() {
   return (
     <nav
@@ -56,7 +55,6 @@ export default function TabBar() {
       <Tab id="run" />
       <Tab id="history" />
       <Tab id="vault" />
-      <Tab id="runvault" />
       <div className="mt-auto" />
       <Tab id="settings" />
     </nav>

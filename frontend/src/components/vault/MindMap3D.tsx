@@ -285,10 +285,19 @@ export default function MindMap3D<N extends MindMapNode, L extends object>({
     }
   }, [])
 
-  // Fly in on tab entry and when `resetKey` changes (e.g. switching whose vault is shown), once
-  // the real layout exists. Plain data changes (an added card) don't move the camera.
+  // On tab entry the camera is already at its home pose: the tab switch does the zooming, and a
+  // fly-in from far out would show the map tiny and off-centre while the view fades in. When
+  // `resetKey` changes on screen (e.g. switching whose vault is shown) it flies in. Both wait for
+  // the real layout; plain data changes (an added card) don't move the camera.
+  const shownFor = useRef<{ key: unknown } | null>(null)
   useEffect(() => {
-    if (active && ready && forcesSet) focusCentral(1400, true)
+    if (!active || !ready || !forcesSet) return
+    const switched = shownFor.current !== null && shownFor.current.key !== resetKey
+    shownFor.current = { key: resetKey }
+    if (switched) return focusCentral(1400, true)
+    flight.current?.cancel()
+    const home = homePose()
+    if (home) fg.current?.cameraPosition(home.pos, home.look, 0)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only on entry / view switch
   }, [active, ready, forcesSet, resetKey])
 

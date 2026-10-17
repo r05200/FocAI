@@ -7,12 +7,14 @@ interface Props {
   onClose: () => void
   children: ReactNode
   'aria-label': string
+  // Extra room to leave on the right while in the default spot (e.g. for a sidebar), in px.
+  rightInset?: number
 }
 
 // Floating card the user can drag by its header (the little grip pill signals that). Positions
 // are relative to the nearest positioned ancestor and clamped inside it. Once moved, the spot
 // sticks for as long as this component stays mounted.
-export default function DraggablePanel({ label, onClose, children, 'aria-label': ariaLabel }: Props) {
+export default function DraggablePanel({ label, onClose, children, 'aria-label': ariaLabel, rightInset = 0 }: Props) {
   const panel = useRef<HTMLElement>(null)
   const drag = useRef<{ dx: number; dy: number; maxX: number; maxY: number } | null>(null)
   // null = default spot (top right).
@@ -44,9 +46,9 @@ export default function DraggablePanel({ label, onClose, children, 'aria-label':
     <aside
       ref={panel}
       aria-label={ariaLabel}
-      style={pos ? { left: pos.x, top: pos.y } : undefined}
+      style={pos ? { left: pos.x, top: pos.y } : { right: 20 + rightInset }}
       className={`absolute z-20 flex max-h-[calc(100%-90px)] w-[min(300px,calc(100%-32px))] flex-col overflow-hidden rounded-xl border border-line bg-elev text-sm shadow-xl shadow-black/30 ${
-        pos ? '' : 'top-16 right-5'
+        pos ? '' : 'top-16 transition-[right] duration-300 ease-zoom'
       }`}
     >
       <div

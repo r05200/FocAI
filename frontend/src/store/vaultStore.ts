@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import * as api from '../api/client'
+import { SAMPLE_DIRECTIVES, SAMPLE_ITEM_IDS, SAMPLE_PEOPLE } from '../fixtures/seed'
 import { isOffline } from '../api/client'
 import type {
   Directive,
@@ -41,6 +42,8 @@ interface VaultState {
   // People in the order they were first seen. It fixes each person's colour, so a vault created
   // later goes on the end instead of being re-sorted in (which would recolour everyone).
   peopleOrder: string[]
+  // Sample directives the user deleted (they only exist in the browser).
+  hiddenSampleDirectives: string[]
   loadRemote: () => Promise<void>
   // Mutations: call the backend and fold the result into `remote`. When the backend is
   // unreachable they fall back to the local-only data below, so the UI keeps working offline.
@@ -84,7 +87,9 @@ export const useVaultStore = create<VaultState>()((set, get) => ({
   setTool: (tool) => set({ tool }),
 
   remote: EMPTY,
-  peopleOrder: [],
+  // The sample people go first, so Alice and Bob keep their colours whatever else turns up.
+  peopleOrder: SAMPLE_PEOPLE,
+  hiddenSampleDirectives: [],
 
   loadRemote: async () => {
     try {
@@ -139,6 +144,10 @@ export const useVaultStore = create<VaultState>()((set, get) => ({
   },
 
   removeDirective: async (id) => {
+    if (SAMPLE_DIRECTIVES.some((d) => d.id === id)) {
+      set((s) => ({ hiddenSampleDirectives: [...s.hiddenSampleDirectives, id] }))
+      return
+    }
     if (get().remote.status !== 'ok') {
       set((s) => ({ addedDirectives: s.addedDirectives.filter((d) => d.id !== id) }))
       return
@@ -164,7 +173,8 @@ export const useVaultStore = create<VaultState>()((set, get) => ({
         },
       },
     }))
-    if (get().remote.status !== 'ok') return
+    // Sample cards exist only in the browser; the backend has nothing to move.
+    if (get().remote.status !== 'ok' || SAMPLE_ITEM_IDS.has(id)) return
     try {
       await api.moveItem(id, position)
     } catch (err) {

@@ -1,12 +1,9 @@
 import { useState } from 'react'
 import { useDirectives } from '../../hooks/useDirectives'
 import { personColor } from '../../lib/colors'
+import { formatDate } from '../../lib/format'
 import { useVaultStore } from '../../store/vaultStore'
 import { CloseIcon } from '../ui/Icons'
-
-function formatDate(seconds: number) {
-  return new Date(seconds * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
-}
 
 // Right-hand sidebar listing directives for whoever's vault is shown. It's a flex sibling of the
 // graph, so opening it narrows the map instead of covering it.

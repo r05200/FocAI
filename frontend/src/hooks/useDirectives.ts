@@ -1,24 +1,19 @@
 import { useMemo } from 'react'
 import { useVaultStore } from '../store/vaultStore'
+import { SAMPLE_DIRECTIVES } from '../fixtures/seed'
 import type { Directive } from '../types'
 
-// Sample directives, shown only while the backend is unreachable.
-const SAMPLE: Directive[] = [
-  { id: 'dir_1', person: 'alice', text: 'Prefer optimizer changes over architecture changes.', created_at: 1759913700 },
-  { id: 'dir_2', person: 'alice', text: 'Skip anything on speculative decoding; already covered.', created_at: 1759913800 },
-  { id: 'dir_3', person: 'bob', text: 'Always report end-to-end latency, not just throughput.', created_at: 1759913900 },
-  { id: 'dir_4', person: 'bob', text: 'Favour results that hold past 32k context.', created_at: 1759914000 },
-]
-
-// Every directive, newest first: from the backend (GET /vault/directives, loaded once by the app
-// shell), or the samples plus anything added locally while the backend is unreachable.
+// Every directive, newest first: the sample ones (src/fixtures/seed.ts), plus the backend's
+// (GET /vault/directives, loaded once by the app shell) or, while it's unreachable, whatever was
+// added locally.
 function useAllDirectives(): Directive[] {
   const { status, directives } = useVaultStore((s) => s.remote)
   const added = useVaultStore((s) => s.addedDirectives)
-  return useMemo(
-    () => [...(status === 'offline' ? [...SAMPLE, ...added] : directives)].sort((a, b) => b.created_at - a.created_at),
-    [status, directives, added],
-  )
+  const hidden = useVaultStore((s) => s.hiddenSampleDirectives)
+  return useMemo(() => {
+    const samples = SAMPLE_DIRECTIVES.filter((d) => !hidden.includes(d.id))
+    return [...samples, ...(status === 'ok' ? directives : added)].sort((a, b) => b.created_at - a.created_at)
+  }, [status, directives, added, hidden])
 }
 
 // Directives from any of the given vaults (OR).

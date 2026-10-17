@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
 import { getConfig, isOffline, listPrompts } from '../../api/client'
+import { usePolled } from '../../hooks/usePolled'
 import type { PromptInfo, PublicConfig } from '../../types'
 
 // Read-only view of the backend: its models, caps and score thresholds (GET /api/config) and the
@@ -7,23 +7,16 @@ import type { PromptInfo, PublicConfig } from '../../types'
 
 type Loaded<T> = { state: 'loading' } | { state: 'offline' } | { state: 'error'; message: string } | { state: 'ok'; data: T }
 
-function useLoaded<T>(load: () => Promise<T>, refreshKey: unknown): Loaded<T> {
-  const [value, setValue] = useState<Loaded<T>>({ state: 'loading' })
-  useEffect(() => {
-    let cancelled = false
+// Loaded each time the tab is opened; the previous answer stays up while it refreshes.
+function useLoaded<T>(load: () => Promise<T>, active: boolean): Loaded<T> {
+  const loaded = usePolled(active ? 'shown' : null, () =>
     load().then(
-      (data) => !cancelled && setValue({ state: 'ok', data }),
-      (err) => {
-        if (cancelled) return
-        setValue(isOffline(err) ? { state: 'offline' } : { state: 'error', message: err instanceof Error ? err.message : 'Failed to load' })
-      },
-    )
-    return () => {
-      cancelled = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `load` is a stable module function
-  }, [refreshKey])
-  return value
+      (data): Loaded<T> => ({ state: 'ok', data }),
+      (err): Loaded<T> =>
+        isOffline(err) ? { state: 'offline' } : { state: 'error', message: err instanceof Error ? err.message : 'Failed to load' },
+    ),
+  )
+  return loaded ?? { state: 'loading' }
 }
 
 const ROWS: { key: keyof PublicConfig; label: string; hint?: string }[] = [

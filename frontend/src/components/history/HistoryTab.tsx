@@ -1,25 +1,12 @@
 import { useRunHistory } from '../../hooks/useRunHistory'
+import { formatDateTime } from '../../lib/format'
+import { runEnd } from '../../lib/nodeStatus'
 import { useRunStore } from '../../store/runStore'
 import { useUiStore } from '../../store/uiStore'
 import { HistoryIcon } from '../ui/Icons'
 
-function formatDate(seconds: number) {
-  return new Date(seconds * 1000).toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  })
-}
-
 // The backend's RunMode values are "pruned" / "unpruned"; the UI calls pruning "parking".
 const MODE_LABEL = { pruned: 'parked', unpruned: 'unparked' } as const
-
-const STATUS_STYLE = {
-  running: 'text-kind-note',
-  done: 'text-rel-supports',
-  failed: 'text-kind-correction',
-} as const
 
 export default function HistoryTab({ active }: { active: boolean }) {
   // Refetched each time the tab is opened (GET /runs), so new and finished runs show up.
@@ -56,12 +43,10 @@ export default function HistoryTab({ active }: { active: boolean }) {
                   className="w-full rounded-2xl border border-line bg-elev px-5 py-4 text-left transition-colors hover:bg-hover">
                   <p className="leading-relaxed">{run.question}</p>
                   <p className="mt-2.5 flex flex-wrap items-center gap-x-2 text-xs text-muted">
-                    <span className={`font-medium capitalize ${STATUS_STYLE[run.status]}`}>
-                      {run.status}
-                    </span>
+                    <span className={`font-medium ${runEnd(run).style}`}>{runEnd(run).label}</span>
                     · <span>{MODE_LABEL[run.mode]}</span> ·{' '}
                     <span className="capitalize">{run.primary_person}</span> ·{' '}
-                    <span>{formatDate(run.created_at)}</span>
+                    <span>{formatDateTime(run.created_at)}</span>
                   </p>
                 </button>
               </li>

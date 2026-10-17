@@ -82,7 +82,7 @@ export default function VaultTab({ active }: { active: boolean }) {
               </span>
             ))}
             {relations.map((r) => (
-              <span key={r} className="inline-flex items-center gap-1.5">
+              <span key={r} className="inline-flex items-center gap-1.5 capitalize">
                 <span className="w-4 border-t-2" style={{ borderColor: RELATION_COLOR[r] }} />
                 {r}
               </span>

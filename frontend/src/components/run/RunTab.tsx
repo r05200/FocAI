@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { selectRunning, useRunStore } from '../../store/runStore'
 import { ArrowLeftIcon } from '../ui/Icons'
+import RunVaultTab from '../runvault/RunVaultTab'
 import StartRunForm from './StartRunForm'
 import TreeCanvas from './TreeCanvas'
 
@@ -18,6 +19,9 @@ export default function RunTab({ active }: { active: boolean }) {
   const runs = useRunStore((s) => s.runs)
   const leave = useRunStore((s) => s.leave)
   const open = useRunStore((s) => s.open)
+  const runVaultOpen = useRunStore((s) => s.runVaultOpen)
+  const openRunVault = useRunStore((s) => s.openRunVault)
+  const closeRunVault = useRunStore((s) => s.closeRunVault)
   const syncRuns = useRunStore((s) => s.syncRuns)
   const running = useMemo(() => selectRunning(runs), [runs])
   const started = viewingId !== null
@@ -67,7 +71,14 @@ export default function RunTab({ active }: { active: boolean }) {
             if (e.target === e.currentTarget && !useRunStore.getState().viewingId) setTreeId(null)
           }}
         >
-          <TreeCanvas active={active} />
+          <TreeCanvas
+            runId={treeId}
+            question={runs.find((r) => r.id === treeId)?.question ?? ''}
+            startedAt={(runs.find((r) => r.id === treeId)?.startedAt ?? 0) / 1000}
+            active={active && !runVaultOpen}
+            live={runs.some((r) => r.id === treeId && (r.life === 'running' || r.life === 'paused'))}
+            onOpenRunVault={openRunVault}
+          />
         </div>
       )}
 
@@ -113,6 +124,18 @@ export default function RunTab({ active }: { active: boolean }) {
         </div>
       </div>
 
+      {/* This run's vault, over everything else (the tree keeps its place underneath). */}
+      {runVaultOpen && viewingId && (
+        <div className="absolute inset-0 z-30 animate-[fade-in_300ms_ease-out_both] bg-bg">
+          <RunVaultTab
+            runId={viewingId}
+            active={active}
+            live={runs.some((r) => r.id === viewingId && (r.life === 'running' || r.life === 'paused'))}
+            onBack={closeRunVault}
+          />
+        </div>
+      )}
+
       {/* Runs still going, shown on the main menu: scrollable, 32px from the window's edges. */}
       <aside
         ref={panel}
@@ -136,10 +159,18 @@ export default function RunTab({ active }: { active: boolean }) {
                 className="block w-full px-5 py-3.5 text-left transition-colors hover:bg-hover"
               >
                 <span className="flex items-start gap-2.5">
-                  <span className="mt-1.5 size-2 shrink-0 animate-pulse rounded-full bg-kind-learned" />
+                  <span
+                    className={`mt-1.5 size-2 shrink-0 rounded-full ${
+                      r.life === 'paused' ? 'bg-kind-note' : 'animate-pulse bg-kind-learned'
+                    }`}
+                  />
                   <span className="min-w-0 text-sm leading-relaxed wrap-break-word">{r.question}</span>
                 </span>
-                {r.life === 'stopping' && <span className="mt-1 block pl-4.5 text-xs text-muted">Stopping…</span>}
+                {(r.life === 'stopping' || r.life === 'paused') && (
+                  <span className="mt-1 block pl-4.5 text-xs text-muted">
+                    {r.life === 'paused' ? 'Paused' : 'Stopping…'}
+                  </span>
+                )}
               </button>
             </li>
           ))}

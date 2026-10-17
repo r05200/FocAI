@@ -167,6 +167,15 @@ export interface Run {
   vault_people: string[] // whose vaults the scorers search
   mode: RunMode
   status: RunStatus
+  // PROPOSED (not sent by the backend yet): why a finished run ended, so the UI doesn't have to
+  // guess from status "failed" (which today means stopped by the user, or crashed): "stopped" (the
+  // user), "limit" (node budget, depth or any other cap reached), "error" (a real failure, with the
+  // message in `error`). The UI uses it when present.
+  end_reason?: 'stopped' | 'limit' | 'error'
+  error?: string
+  // True while the run is paused: its agent takes no further step until resumed. Not a status (the
+  // run is still "running"); cleared when the run ends or is stopped.
+  paused: boolean
   caps: Caps
   final_answer: string | null
   totals: RunTotals
@@ -300,7 +309,7 @@ export type PrunerEvent =
 
 // ---- other finished routes
 
-// GET /api/runs/{id}/forks: where the amend agent asked to restart exploration (not built yet).
+// GET /api/runs/{id}/forks: where the amend agent asked to restart exploration (forking itself is not built).
 export interface ForkRequest {
   id: string
   run_id: string
@@ -309,6 +318,13 @@ export interface ForkRequest {
   objective_ids: string[]
   status: 'requested'
   created_at: number
+}
+
+// POST /api/runs/{id}/pause and /resume -> 202. Calls in flight finish; the next step waits (pause)
+// or goes ahead (resume). 404 unknown run, 409 already finished; pausing a paused run is fine.
+export interface PauseResult {
+  run_id: string
+  paused: boolean
 }
 
 // POST /api/runs/{id}/stop -> 202 (404 unknown run, 409 already finished).
@@ -338,4 +354,37 @@ export interface PublicConfig {
   post_score_min: number
   rescore_park_below: number
   backtrack_below: number
+}
+
+// ---- per-run vault (PROPOSED: the backend has no run vault yet)
+
+// One thing the agent came up with or found while exploring, filed under the branch (tree path) it
+// came from. Not a vault item: no owner, no embedding, no links.
+export interface RunIdea {
+  id: string
+  branch: string
+  title: string
+  summary: string
+}
+
+// The agent's own discoveries for one run. Stored on disk with the run, e.g.
+// data/runs/<run_id>/vault.json.
+export interface RunVault {
+  run_id: string
+  ideas: RunIdea[]
+}
+
+// ---- node logs (PROPOSED: the backend doesn't record per-step logs yet)
+
+// One entry in a node's log: a reasoning step, a tool call or its result, a scoring decision...
+export type LogKind = 'thought' | 'tool_call' | 'tool_result' | 'decision' | 'activity' | 'error'
+
+export interface LogEntry {
+  id: string
+  ts: number
+  kind: LogKind
+  title: string // one line: "Searched the vault", "Pre-score 7.2 / 10", ...
+  text: string // the detail: the reasoning, the tool's result, the reason for a decision
+  tool?: string | null // tool_call / tool_result only
+  args?: Record<string, unknown> | null // tool_call only
 }
