@@ -287,21 +287,35 @@ class VaultStore:
                 summary=one_line(draft.summary), tags=tags, source_text=req.text.strip(),
                 investigate=draft.investigate,
             )
-            [item.embedding] = await self.llm.embed([embedding_text(item)],
-                                                    purpose="vault_embed")
+            return await self._file(item)
 
-            neighbors = self.nearest(item.embedding, k=self.cfg.neighbors_per_item,
-                                     threshold=self.cfg.link_threshold)
-            edges = await self._relate(item, neighbors)
+    async def ingest_learned(self, person: str, title: str, summary: str,
+                             source_text: str = "") -> IngestResult:
+        """File something a run learned (kind "learned"). The title and summary are already
+        written, so no draft LLM call is made: only the embedding and the link labels."""
+        async with self._lock:
+            item = VaultItem(person=person, kind="learned", title=one_line(title),
+                             summary=one_line(summary),
+                             source_text=(source_text or summary).strip()[:MAX_INGEST_CHARS])
+            return await self._file(item)
 
-            x, y, z = layout.place_near(item.id, item.embedding, self._placed())
-            item.auto_position = Position(x=x, y=y, z=z)
-            self._vaults.add(item.person)
-            self._items[item.id] = item
-            self._edges.extend(edges)
-            self._save(item.person)
-            log.info("ingested %s (%s) with %d edges", item.id, item.title, len(edges))
-            return IngestResult(item=item.view(), edges=edges)
+    async def _file(self, item: VaultItem) -> IngestResult:
+        """Embed a new item, link it to its neighbors, place it and save it (lock held)."""
+        [item.embedding] = await self.llm.embed([embedding_text(item)],
+                                                purpose="vault_embed")
+
+        neighbors = self.nearest(item.embedding, k=self.cfg.neighbors_per_item,
+                                 threshold=self.cfg.link_threshold)
+        edges = await self._relate(item, neighbors)
+
+        x, y, z = layout.place_near(item.id, item.embedding, self._placed())
+        item.auto_position = Position(x=x, y=y, z=z)
+        self._vaults.add(item.person)
+        self._items[item.id] = item
+        self._edges.extend(edges)
+        self._save(item.person)
+        log.info("ingested %s (%s) with %d edges", item.id, item.title, len(edges))
+        return IngestResult(item=item.view(), edges=edges)
 
     async def _relate(self, item: VaultItem,
                       neighbors: list[tuple[VaultItem, float]]) -> list[VaultEdge]:

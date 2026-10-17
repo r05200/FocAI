@@ -14,3 +14,5 @@ so they can be tuned without touching logic. Planned (added as each step is buil
 - `amend_rate.md` (done): the amend-objectives agent's loose re-rating of sibling branches
 - `propose.md` (done): the hypothesis phase: 2-3 hypotheses from different families, each with a planned experiment and a search/replace edit
 - `propose_repair.md` (done): one batched repair of proposals whose edits did not apply
+- `synthesize.md` (done): judge one experiment: measured vs explanation, verdict, one-line finding, next action
+- `final_report.md` (done): the run's final answer from the findings and the change kept

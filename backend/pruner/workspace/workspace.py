@@ -218,17 +218,34 @@ class Workspace:
             if path.exists():
                 path.unlink()
             touched.append(rel)
+        for rel in touched:
+            if rel.endswith(".py"):
+                self._drop_bytecode(self.roots.root / rel)
         self.info.applied_version = version
         self._save_info()
         return sorted(touched)
+
+    @staticmethod
+    def _drop_bytecode(source: Path) -> None:
+        """Remove the cached bytecode of a Python file that was just rewritten. Python checks a
+        .pyc against the source's size and whole-second mtime, so a same-size rewrite within the
+        same second (common when versions swap between experiments) would run stale code."""
+        cache = source.parent / "__pycache__"
+        if cache.is_dir():
+            for pyc in cache.glob(f"{source.stem}.*.pyc"):
+                pyc.unlink(missing_ok=True)
 
     def restore_baseline(self) -> list[str]:
         return self.apply_version(self.info.baseline_version)
 
     def patch(self, version: str | None = None) -> str:
         """Unified diff from the baseline to `version` (the applied one by default)."""
-        base = self.manifest(self.info.baseline_version)
-        target = self.manifest(version or self.info.applied_version)
+        return self.diff(self.info.baseline_version, version or self.info.applied_version)
+
+    def diff(self, from_version: str, to_version: str) -> str:
+        """Unified diff between two versions."""
+        base = self.manifest(from_version)
+        target = self.manifest(to_version)
         chunks = []
         for rel in sorted(base.keys() | target.keys()):
             if base.get(rel) == target.get(rel):

@@ -306,6 +306,7 @@ class RunTotals(BaseModel):
     nodes_total: int = 0
     nodes_parked: int = 0
     nodes_restored: int = 0
+    experiments_run: int = 0  # the baseline included
     elapsed_s: float = 0.0
 
 
@@ -361,6 +362,8 @@ class Run(BaseModel):
     workspace: WorkspaceInfo | None = None
     command: RunCommand | None = None
     awaiting: Literal["command"] | None = None  # the run waits for the user to answer a question
+    best_node_id: str | None = None  # the node whose code is left applied at the end
+    patch_ready: bool = False  # GET /runs/{id}/patch has the final changes
     final_answer: str | None = None
     totals: RunTotals = Field(default_factory=RunTotals)
     created_at: float = Field(default_factory=time.time)

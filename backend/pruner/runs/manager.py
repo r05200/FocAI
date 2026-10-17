@@ -44,8 +44,11 @@ Tools: with a vault store, the agent's step gets its tools (agent/tools.py phase
 ToolRunner. Every call is logged on the node with the reason the agent gave (node_log events,
 data/runs/<id>/logs/<node>.jsonl); the write tools add to the run's findings log and run vault.
 
-Not built yet: pushing events to connected clients (the SSE stream), more than one agent turn,
-and acting on fork requests.
+Stopping or failing a run with files leaves the best supported version applied to the user's
+files (the originals if none) and saves the patch, so a half-tried change never stays.
+
+Not built yet: pushing events to connected clients (the SSE stream), human node actions and
+steering re-rates (M4), and acting on fork requests.
 """
 
 from __future__ import annotations
@@ -167,6 +170,7 @@ class LiveRun:
     answers: dict[str, asyncio.Future] = field(default_factory=dict)  # question id -> waiter
     workspace: Workspace | None = None
     tool_seen: dict[str, str] = field(default_factory=dict)  # tool results reused within the run
+    focus: str | None = None  # a node the orchestrator should run next (a confirmed suggestion)
     level: int = 0  # depth of the level in progress
     level_start: RunSnapshot | None = None  # the tree when that level was created
     step: asyncio.Task | None = None  # the agent's step in flight, which an instruction aborts
@@ -270,22 +274,34 @@ class RunManager:
         self.store.save_level_start(snap)
 
     def _rewind_level(self, state: LiveRun) -> None:
-        """Put the nodes of the level in progress back to how they were when it was created."""
+        """Put the tree back to how it was at the last level boundary: nodes created since are
+        removed, the others get their fields back (an orchestrator step can touch nodes at any
+        depth, e.g. run a depth-1 node and give it children)."""
         assert state.level_start is not None
         origin = {n.id: n for n in state.level_start.nodes}
-        state.nodes[:] = [n for n in state.nodes if n.depth < state.level or n.id in origin]
+        state.nodes[:] = [n for n in state.nodes if n.id in origin]
         for node in state.nodes:
-            if node.depth >= state.level:
-                for name in Node.model_fields:
-                    setattr(node, name, copy.deepcopy(getattr(origin[node.id], name)))
+            for name in Node.model_fields:
+                setattr(node, name, copy.deepcopy(getattr(origin[node.id], name)))
         state.emitter.emit(Activity, message="A new instruction arrived: the current step was "
                                              "aborted and will start again.")
         for node in state.nodes:
             if node.depth >= state.level and node.status == "running":
                 state.emitter.emit(NodeUpdated, node=node, change="running")
 
+    def _settle_files(self, state: LiveRun) -> None:
+        """When a run with files ends early (stop or error), leave the best supported version
+        applied (the original files if none), so a half-tried change never stays."""
+        if self.orchestrator is None or state.workspace is None:
+            return
+        try:
+            self.orchestrator.settle_files(self, state)
+        except (OSError, KeyError):
+            log.exception("could not restore the files of run %s", state.run.id)
+
     def _fail(self, state: LiveRun, error: str) -> None:
         """End the run with an error: the tree is saved as it is and the other tasks stop."""
+        self._settle_files(state)
         state.run.status = "failed"
         state.run.paused = False
         state.emitter.emit(RunFailed, error=error)
@@ -509,6 +525,8 @@ class RunManager:
         final run_failed event. KeyError if the run is unknown."""
         state = self._live.get(run_id)
         await self.cancel(run_id)
+        if state is not None:
+            await asyncio.to_thread(self._settle_files, state)
         return self.store.mark_stopped(run_id, state.snapshot() if state else None)
 
     async def wait(self, run_id: str) -> None:
@@ -630,6 +648,7 @@ class RunManager:
                                            scorer=sum(n.tokens.scorer for n in nodes))
             run.totals.nodes_total = len(nodes)
             run.totals.nodes_parked = sum(n.status == "parked" for n in nodes)
+            run.totals.experiments_run = sum(n.experiment is not None for n in nodes)
             run.totals.elapsed_s = round(time.time() - started, 2)
             emitter.emit(RunCompleted, run=run)
         except (LLMCancelled, asyncio.CancelledError):

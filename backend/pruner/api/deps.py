@@ -81,4 +81,4 @@ def get_run_manager() -> RunManager:
 
 @lru_cache(maxsize=1)
 def get_orchestrator() -> Orchestrator:
-    return Orchestrator(get_agent_llm(), get_prescorer())
+    return Orchestrator(get_agent_llm(), get_prescorer(), get_postscorer())

@@ -3,6 +3,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import PlainTextResponse
 
 from pruner.api.common import SSE_RESPONSES, not_implemented
 from pruner.api.deps import get_agent_llm, get_run_manager, get_run_store, get_supporting_llm
@@ -91,6 +92,18 @@ async def _hold(call, run_id: str) -> PauseResult:
     except RunNotRunning as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
     return PauseResult(run_id=run_id, paused=run.paused)
+
+
+@router.get("/{run_id}/patch", response_class=PlainTextResponse)
+async def get_patch(run_id: str, store: Store) -> str:
+    """The changes the run left applied to the user's files, as a unified diff from the original
+    files (empty if nothing was kept). 404 until the run has finished with files."""
+    if store.snapshot(run_id) is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    patch = store.patch(run_id)
+    if patch is None:
+        raise HTTPException(status_code=404, detail="this run has no patch (yet)")
+    return patch
 
 
 @router.get("/{run_id}/forks")

@@ -52,3 +52,55 @@ it needs, and what milestone or session it came from.
     (with stats), base_version, version and pre_band ("low" | "medium" | "high"); parked ones
     have status "parked". The baseline node n1 is type "experiment".
 
+
+--- From backend audit (unwired routes and unused code) -----------------------------------------------
+
+[ ] Routes in backend/pruner/api/ that still return 501 (not_implemented):
+      - GET /api/runs/{id}/events (runs.py): SSE. History is easy (RunStore.events(run_id, after));
+        live tailing needs a broadcast/pub-sub that does not exist yet. Frontend polls until then
+        (frontend/src/api/stream.ts and hooks/useRunStream.ts are empty placeholders).
+      - POST /api/runs/{id}/nodes/{node_id}/keep | park | restore (nodes.py): need one shared
+        "apply node action and emit node_updated" helper in RunManager. park also records a dead end;
+        restore also resumes the agent from the node's path to the root and writes a vault
+        correction item (VaultStore.ingest).
+      - GET /api/runs/{id}/questions, POST .../questions/{qid}/answer (questions.py): no question
+        storage yet; answer must write to that person's vault and wake the agent.
+      - GET /api/replays, GET /api/replays/{name}/events (replays.py): nothing lists data/replays/
+        and there is no timed streamer.
+
+[ ] Routes the frontend already calls but the backend does not have (see frontend/src/api/client.ts):
+      - GET /api/runs/{id}/nodes/{node_id}/logs -> LogEntry[] (RunStore.append_log exists, unused)
+      - POST|GET /api/runs/{id}/vault -> RunVault (RunStore.run_vault / save_run_vault /
+        append_finding exist, unused)
+
+[ ] Wire up or delete the code nothing calls yet (found with a symbol-usage scan):
+      - backend/pruner/runs/command.py (verify_command, runnable, clean_candidate, find_source,
+        missing_scripts) and backend/pruner/workspace/runner.py (run_command, CommandResult): never
+        imported; needed for running the user's command in the experiment phase.
+      - Workspace.attachments_text, Workspace.restore_baseline (workspace/workspace.py): unused.
+        restore_baseline is what the crash-recovery item above needs.
+      - phase_tools (agent/tools.py:385): unused.
+      - get_postscorer (api/deps.py): leftover, RunManager is not given a PostScorer.
+      - Only tests call: LLM.is_stopped, PreScorer.apply_rescore, RunManager.is_running.
+
+[ ] Scorers do not emit VaultRetrieved events or bump retrieval_count yet (TODO(agent loop) in
+    backend/pruner/pruning/prescorer.py and postscorer.py).
+
+[ ] Optional: ruff --select PLR0913 flags 25 functions with more than 5 arguments (mostly
+    pruning/prescorer.py). Style only.
+
+--- From M3 (experiments, synthesis, the loop) ---------------------------------------------------
+
+[ ] Real end-to-end run on a THROWAWAY COPY (from M3 on, experiments EDIT THE FILES IN PLACE and
+    run the command for real; the best supported change is left applied at the end):
+      cd backend && uv run uvicorn pruner.api.app:app --port 8000
+      POST /api/runs with "paths" and a question that contains the command, then watch
+      GET /api/runs/<id>, GET /api/runs/<id>/nodes/<node>/logs, and at the end
+      GET /api/runs/<id>/patch (to undo: git apply -R, or copy data/work/<id>/baseline back).
+    Watch the free-tier call count; lower PRUNER_NODE_BUDGET or PRUNER_TOOL_CALLS_PER_PHASE.
+
+[ ] Frontend (types.ts): Run.best_node_id, Run.patch_ready, RunTotals.experiments_run; nodes now
+    go running -> done | failed | parked with experiment (metrics, tails, error), synthesis
+    (measured, explanation, verdict, finding, next_action...), verdict, closed, priority.
+    New route: GET /api/runs/{id}/patch (text/plain unified diff).
+

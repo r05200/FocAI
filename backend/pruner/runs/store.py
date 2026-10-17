@@ -7,6 +7,7 @@ Layout under cfg.runs_dir (git-ignored):
   <run_id>/findings.jsonl the run's shared findings log (orchestrator lines and agent ones)
   <run_id>/vault.json     the run vault: ideas and whole-branch findings (write_findings_vault)
   <run_id>/logs/<node>.jsonl  a node's log: tool calls with their reasons, results, decisions
+  <run_id>/final.patch    the changes left applied to the user's files, from the originals
   <run_id>/level_start.json  the tree as it was when the current level was created (rewritten
                           whenever a level is created or completed); a reload of an unfinished
                           run goes back to it, so the nodes of the level in progress recover their
@@ -56,6 +57,7 @@ LEVEL_START_FILE = "level_start.json"
 FINDINGS_FILE = "findings.jsonl"
 RUN_VAULT_FILE = "vault.json"
 LOGS_DIR = "logs"
+PATCH_FILE = "final.patch"
 _NODE_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")  # node ids become log file names
 _RUN_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")  # run ids become directory names
 
@@ -146,6 +148,13 @@ class RunStore:
 
     def save_run_vault(self, vault: RunVault) -> None:
         write_atomic(self.dir / vault.run_id / RUN_VAULT_FILE, vault.model_dump_json(indent=1))
+
+    def save_patch(self, run_id: str, patch: str) -> None:
+        write_atomic(self.dir / run_id / PATCH_FILE, patch)
+
+    def patch(self, run_id: str) -> str | None:
+        path = self._file(run_id, PATCH_FILE)
+        return path.read_text() if path is not None and path.exists() else None
 
     def last_seq(self, run_id: str) -> int:
         return max((e.seq for e in self.events(run_id)), default=0)
