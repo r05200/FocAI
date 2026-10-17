@@ -104,3 +104,26 @@ it needs, and what milestone or session it came from.
     (measured, explanation, verdict, finding, next_action...), verdict, closed, priority.
     New route: GET /api/runs/{id}/patch (text/plain unified diff).
 
+
+--- From M4 (a person's node actions, steering chips, re-rate, suggestions) --------------------
+
+[ ] Frontend (types.ts):
+      - Instruction.active (a steering chip can be off)
+      - Node: directive_score (0..1 | null), directive_reason, needs_remeasure, missing_metrics,
+        pending_action ("keep" | "park" | "restore" | null)
+      - new type Suggestion {id, run_id, node_id, action: "run"|"expand"|"restore"|"remeasure",
+        reason, family, score, source: "steer"|"fork", instruction_id, status:
+        "open"|"confirmed"|"dismissed"|"replaced", created_at}; RunSnapshot.suggestions
+      - new events: suggestions_ready {suggestions, replaced: ids}, suggestion_resolved
+        {suggestion}
+    Routes now live: POST /api/runs/{id}/nodes/{node_id}/keep|park|restore (no longer 501, so
+    TreeCanvas's local-only park fallback is no longer needed), PATCH
+    /api/runs/{id}/instructions/{instruction_id} {active}, GET /api/runs/{id}/suggestions, POST
+    /api/runs/{id}/suggestions/{suggestion_id}/confirm|dismiss.
+
+[ ] Acting on a FINISHED run (node actions, instructions, chip toggles, suggestions) is refused
+    with 409. Re-opening a finished run when budget remains would need the orchestrator to resume
+    its loop from a saved tree.
+
+[ ] Several older items above are done now (the logs and run-vault routes exist; command.py and
+    runner.py are wired in). Tick them off when convenient.

@@ -6,7 +6,7 @@ run(node) does, after the experiment:
      with its reason) sees the judge's read -> measured / explanation / verdict / finding /
      next action;
   2. code overrides: a failed experiment is "inconclusive"; a refuted result the judge would park
-     is parked (restorable), otherwise the node is done;
+     is parked (restorable) unless a person kept the node, otherwise the node is done;
   3. the finding goes to the shared findings log, the run vault (an idea) and, when supported or
      refuted, the run owner's vault as a "learned" item.
 The baseline node gets no LLM synthesis: its numbers are what the others are compared with.
@@ -115,6 +115,8 @@ class SynthesisPhase:
             post.apply(node, scored)
             return f"{scored.post_score * 10:.1f} / 10: {scored.decision.reason}"
 
+        kept_by_hand = node.decided_by == "human" and node.decision is not None \
+            and node.decision.verdict == "keep"
         judge_task = asyncio.create_task(judge())
         hypothesis = node.hypothesis
         prompt = prompts.render(
@@ -143,6 +145,13 @@ class SynthesisPhase:
         node.synthesis, node.verdict = synthesis, verdict
         node.summary = s.finding
         node.phase = "complete"
+        if kept_by_hand and node.decided_by != "human":
+            node.decided_by = "human"  # a person's keep wins over the judge's park
+            if node.status == "parked":
+                host._log(state, node.id, LogEntry(
+                    kind="decision", title="Kept by you despite the judge",
+                    text=node.decision.reason if node.decision else "", phase="synthesis"))
+                node.status = "done"
         if node.experiment.error:
             node.status = "failed"
         elif verdict == "refuted" and node.status == "parked":

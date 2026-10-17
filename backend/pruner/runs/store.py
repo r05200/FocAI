@@ -35,6 +35,8 @@ from pruner.core.events import (
     RunFailed,
     RunStarted,
     RunUpdated,
+    SuggestionResolved,
+    SuggestionsReady,
     parse_event,
 )
 from pruner.core.fs import write_atomic
@@ -47,6 +49,7 @@ from pruner.core.models import (
     Run,
     RunSnapshot,
     RunVault,
+    Suggestion,
 )
 
 STOPPED_BY_USER = "Stopped by the user"
@@ -68,11 +71,19 @@ def rebuild_snapshot(events: list[Event]) -> RunSnapshot | None:
     nodes: dict[str, Node] = {}
     questions: dict[str, Question] = {}
     findings: list[Finding] = []
+    suggestions: dict[str, Suggestion] = {}
     for e in events:
         if isinstance(e, (RunStarted, RunCompleted, RunUpdated)):
             run = e.run
         elif isinstance(e, FindingAdded):
             findings.append(e.finding)
+        elif isinstance(e, SuggestionsReady):
+            for sid in e.replaced:
+                if sid in suggestions:
+                    suggestions[sid] = suggestions[sid].model_copy(update={"status": "replaced"})
+            suggestions.update({s.id: s for s in e.suggestions})
+        elif isinstance(e, SuggestionResolved):
+            suggestions[e.suggestion.id] = e.suggestion
         elif isinstance(e, ObjectivesUpdated) and run is not None:
             run = run.model_copy(update={"objectives": e.objectives})
         elif isinstance(e, (NodeCreated, NodeUpdated)):
@@ -82,7 +93,7 @@ def rebuild_snapshot(events: list[Event]) -> RunSnapshot | None:
     if run is None:
         return None
     return RunSnapshot(run=run, nodes=list(nodes.values()), questions=list(questions.values()),
-                       findings=findings)
+                       findings=findings, suggestions=list(suggestions.values()))
 
 
 class RunStore:

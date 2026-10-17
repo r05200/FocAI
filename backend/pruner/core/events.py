@@ -21,6 +21,7 @@ from pruner.core.models import (
     Question,
     Run,
     RunIdea,
+    Suggestion,
     VaultEdge,
     VaultItemView,
 )
@@ -131,6 +132,22 @@ class IdeaAdded(EventBase):
     idea: RunIdea
 
 
+class SuggestionsReady(EventBase):
+    """A steering re-rate offered new places to continue from. `suggestions` is the new open
+    set; any older open ones are now "replaced" (sent in `replaced`)."""
+
+    type: Literal["suggestions_ready"] = "suggestions_ready"
+    suggestions: list[Suggestion]
+    replaced: list[str] = Field(default_factory=list)  # ids of the earlier open suggestions
+
+
+class SuggestionResolved(EventBase):
+    """A person confirmed or dismissed a suggestion."""
+
+    type: Literal["suggestion_resolved"] = "suggestion_resolved"
+    suggestion: Suggestion
+
+
 class RunCompleted(EventBase):
     type: Literal["run_completed"] = "run_completed"
     run: Run  # final totals and final_answer
@@ -156,6 +173,8 @@ Event = Annotated[
     | NodeLog
     | FindingAdded
     | IdeaAdded
+    | SuggestionsReady
+    | SuggestionResolved
     | RunCompleted
     | RunFailed,
     Field(discriminator="type"),

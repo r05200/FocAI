@@ -12,13 +12,14 @@ from pruner.core.models import (
     ForkRequest,
     Instruction,
     InstructionRequest,
+    InstructionToggle,
     PauseResult,
     Run,
     RunSnapshot,
     StartRunRequest,
     StopResult,
 )
-from pruner.runs.manager import ObjectivesNotReady, RunManager, RunNotRunning
+from pruner.runs.manager import InstructionLocked, ObjectivesNotReady, RunManager, RunNotRunning
 from pruner.runs.store import RunStore
 
 router = APIRouter(prefix="/runs", tags=["runs"])
@@ -57,6 +58,8 @@ async def add_instruction(run_id: str, body: InstructionRequest, manager: Manage
     background, it is turned into new objectives (objectives_updated) and, if any were added, the
     amend-objectives agent re-rates the tree from the root (node_updated "scored") and requests a
     fork wherever every branch under a node scored low (an activity line; GET /runs/{id}/forks).
+    On a run with files the whole tree is then re-rated for the new direction in one call and 2-3
+    suggestions are offered (suggestions_ready; forks are among them).
     `directives`, when given, replaces the run's directive list.
 
     409 while the objectives are still being written, and once the run has finished (done, failed
@@ -67,6 +70,22 @@ async def add_instruction(run_id: str, body: InstructionRequest, manager: Manage
     except KeyError as e:
         raise HTTPException(status_code=404, detail="run not found") from e
     except (RunNotRunning, ObjectivesNotReady) as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
+
+@router.patch("/{run_id}/instructions/{instruction_id}")
+async def toggle_instruction(run_id: str, instruction_id: str, body: InstructionToggle,
+                             manager: Manager) -> Instruction:
+    """Turn a steering instruction (a chip) on or off. While off it is left out of every prompt.
+    On a run with files the tree is then re-rated in one call (node_updated "scored" / "parked" /
+    "restored") and new suggestions are offered (suggestions_ready); the step in flight is not
+    aborted. The run's instructions arrive in run_updated. 404 unknown run or instruction, 409 if
+    the run finished, its objectives are not written yet, or it is the research spec."""
+    try:
+        return await manager.toggle_instruction(run_id, instruction_id, body.active)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail="run or instruction not found") from e
+    except (RunNotRunning, ObjectivesNotReady, InstructionLocked) as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
 
 

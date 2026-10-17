@@ -64,7 +64,7 @@ def room_under(run: Run, nodes: Sequence[Node], parent: Node) -> int:
                experiments_left(run, nodes))
 
 
-def _why_blocked(run: Run, nodes: Sequence[Node], parent: Node) -> str:
+def why_blocked(run: Run, nodes: Sequence[Node], parent: Node) -> str:
     if parent.depth + 1 > run.caps.max_depth:
         return f"{parent.id} is at the depth limit ({run.caps.max_depth})"
     if experiments_left(run, nodes) <= 0:
@@ -97,14 +97,14 @@ def plan_action(run: Run, nodes: Sequence[Node], node: Node, action: str,
             parent = target or node
             if room_under(run, nodes, parent) > 0:
                 return Plan("transfer", parent, "transfer", 1, brief, notes)
-            notes.append(f"transfer blocked: {_why_blocked(run, nodes, parent)}")
+            notes.append(f"transfer blocked: {why_blocked(run, nodes, parent)}")
             action = "new_hypothesis"
     if action in NODE_ACTIONS:
         count = 2 if action == "more_experiments" else 1
         if room_under(run, nodes, node) > 0:
             return Plan(action, node, action, min(count, room_under(run, nodes, node)), brief,
                         notes)
-        notes.append(f"{action} blocked: {_why_blocked(run, nodes, node)}")
+        notes.append(f"{action} blocked: {why_blocked(run, nodes, node)}")
         action = "new_hypothesis"
     if action == "new_hypothesis":
         parent = by_id.get(node.parent_id) if node.parent_id else node
@@ -112,5 +112,5 @@ def plan_action(run: Run, nodes: Sequence[Node], node: Node, action: str,
             return Plan("new_hypothesis", parent, "new_hypothesis",
                         min(2, room_under(run, nodes, parent)), brief, notes)
         if parent is not None:
-            notes.append(f"new_hypothesis blocked: {_why_blocked(run, nodes, parent)}")
+            notes.append(f"new_hypothesis blocked: {why_blocked(run, nodes, parent)}")
     return Plan("stop", notes=notes)

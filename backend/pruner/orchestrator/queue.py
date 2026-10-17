@@ -1,10 +1,10 @@
 """Which waiting node runs next (pure, no LLM).
 
 Candidates are the pending nodes (validated, pre-scored, not parked) whose parent is not
-closed. Each gets a priority in 0..1:
+closed and with nothing parked on their path to the root. Each gets a priority in 0..1:
     0.4 x its pre-score
   + 0.3 x its lineage (the parent's post-score if the parent was supported, else 0.5)
-  + 0.2 x its latest directive score (0.5 if no directive rated it)
+  + 0.2 x its latest steering re-rate (directive_score; 0.5 if no re-rate scored it)
   + 0.1 x its novelty
   - 0.05 x its depth
   + 0.2 if a person kept or restored it
@@ -34,16 +34,28 @@ def priority(node: Node, by_id: dict[str, Node]) -> float:
     parent = by_id.get(node.parent_id) if node.parent_id else None
     lineage = (parent.post_score if parent and parent.verdict == "supported"
                and parent.post_score is not None else 0.5)
-    directive = 0.5  # directive scores arrive with steering (M4)
+    directive = node.directive_score if node.directive_score is not None else 0.5
     human = 0.2 if node.decided_by == "human" else 0.0
     return round(0.4 * pre + 0.3 * lineage + 0.2 * directive + 0.1 * novel
                  - 0.05 * node.depth + human, 4)
 
 
+def blocked(node: Node, by_id: dict[str, Node]) -> bool:
+    """Its parent is closed, or something on its path to the root is parked."""
+    parent = by_id.get(node.parent_id) if node.parent_id else None
+    if parent is not None and parent.closed:
+        return True
+    while parent is not None:
+        if parent.status == "parked":
+            return True
+        parent = by_id.get(parent.parent_id) if parent.parent_id else None
+    return False
+
+
 def candidates(nodes: Sequence[Node]) -> list[Node]:
     by_id = {n.id: n for n in nodes}
     return [n for n in nodes if n.status == "pending" and n.phase == "hypothesis"
-            and not (n.parent_id and by_id.get(n.parent_id) and by_id[n.parent_id].closed)]
+            and not blocked(n, by_id)]
 
 
 def select_next(nodes: Sequence[Node], focus: str | None = None) -> Node | None:

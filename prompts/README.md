@@ -16,3 +16,4 @@ so they can be tuned without touching logic. Planned (added as each step is buil
 - `propose_repair.md` (done): one batched repair of proposals whose edits did not apply
 - `synthesize.md` (done): judge one experiment: measured vs explanation, verdict, one-line finding, next action
 - `final_report.md` (done): the run's final answer from the findings and the change kept
+- `steer_rate.md` (done): the steering re-rate after an instruction or a chip toggle: how relevant each node is now (1-10) and a result key it did not measure

@@ -13,6 +13,10 @@ For one set of sibling candidates (the agent's proposals from one parent):
      may look ahead or ask a human); otherwise run. The UI can show low / medium / high by
      translating the number.
 
+rate_for_directive() is the steering re-rate: after an instruction or a chip toggle, one batched
+call (30 nodes per call) rates how relevant every node is now and names a result key the
+instruction needs that a node did not measure (applied by orchestrator/steering.py).
+
 The prescorer only judges: the agent loop decides what to do with the zones, usually by
 calling apply() on each node and then running the survivors. The judge never sees results; it rates how promising the next step is.
 
@@ -55,6 +59,47 @@ class CandidateRating(BaseModel):
 
 class PreScoreBatch(BaseModel):
     ratings: list[CandidateRating] = Field(default_factory=list)
+
+
+class SteerRating(BaseModel):
+    """The steering re-rate of one node. Field order matters: reason comes first."""
+
+    node_id: str
+    reason: str
+    relevant: float = Field(ge=0, le=10)  # 1 to 10, tenths allowed
+    metric_needed: str = ""  # a result key the instruction needs measured, if any
+
+
+class SteerBatch(BaseModel):
+    ratings: list[SteerRating] = Field(default_factory=list)
+
+
+STEER_CHUNK = 30  # nodes per steering re-rate call
+
+
+@dataclass
+class SteerScored:
+    node_id: str
+    relevant: float  # 0..1
+    reason: str
+    metric_needed: str
+    tokens: TokenCount = field(default_factory=TokenCount)
+
+
+def steer_block(node: Node) -> str:
+    """One node as the steering re-rate sees it: status, family, summary, verdict, measured."""
+    head = f"Node {node.id} ({node.status}, family {node.family or '-'}"
+    if node.verdict:
+        head += f", {node.verdict}"
+    lines = [f"{head}): {node.summary or node.description}"]
+    if node.experiment is not None:
+        keys = ", ".join(sorted(node.experiment.metrics)) or "(none)"
+        lines.append(f"Measured keys: {keys}")
+        if node.synthesis is not None:
+            lines.append(f"What it found: {one_line(node.synthesis.measured)[:300]}")
+    else:
+        lines.append("Not run yet.")
+    return "\n".join(lines)
 
 
 Change = Literal["unparked", "parked", "unchanged"]
@@ -213,6 +258,39 @@ class PreScorer:
         gen = await self.llm.generate(PreScoreBatch, prompt, model=self.cfg.fast_model,
                                       purpose="scorer")
         return self._results(nodes, hits, gen, park_below=self.cfg.backtrack_below)
+
+    async def rate_for_directive(self, nodes: Sequence[Node], *, question: str,
+                                 objectives: list[Objective], change: str,
+                                 instructions: Sequence[Instruction] = (),
+                                 directives: Sequence[Directive | str] = (),
+                                 findings: str = "(none)", measured: str = "(none)",
+                                 chunk: int = STEER_CHUNK) -> list[SteerScored]:
+        """The steering re-rate: how relevant each node (pending, parked or finished) is to the
+        run now that `change` happened (an instruction was added or a chip turned on/off), and a
+        result key the instruction needs that the node's experiment did not measure. One call per
+        `chunk` nodes, no vault search, no experiment re-run. Nodes the judge skipped are left
+        out of the result. Nothing is written to nodes (see orchestrator/steering.py)."""
+        out: list[SteerScored] = []
+        for start in range(0, len(nodes), chunk):
+            part = list(nodes[start:start + chunk])
+            prompt = prompts.render(
+                "steer_rate", question=question, change=change,
+                instructions=prompts.render_instructions(instructions, directives),
+                objectives=prompts.render_objectives(objectives), findings=findings,
+                measured=measured, nodes="\n\n".join(steer_block(n) for n in part))
+            gen = await self.llm.generate(SteerBatch, prompt, model=self.cfg.fast_model,
+                                          purpose="scorer")
+            judged = {r.node_id: r for r in gen.value.ratings}
+            share = TokenCount(input=gen.tokens.input // len(part),
+                               output=gen.tokens.output // len(part), calls=gen.tokens.calls)
+            for node in part:
+                r = judged.get(node.id)
+                if r is None:
+                    log.warning("steering re-rate gave no score for %s", node.id)
+                    continue
+                out.append(SteerScored(node.id, to_unit(r.relevant), one_line(r.reason),
+                                       r.metric_needed.strip(), share))
+        return out
 
     # ---- shared pieces
 

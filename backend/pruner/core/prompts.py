@@ -54,7 +54,7 @@ def render_instructions(instructions: Sequence[Instruction],
     """The research spec, later instructions, then the person's standing directives, for the
     {{instructions}} placeholder."""
     spec = [i.text for i in instructions if i.kind == "spec"]
-    steer = [i.text for i in instructions if i.kind == "steer"]
+    steer = [i.text for i in instructions if i.kind == "steer" and i.active]
     block = render_directives(directives)
     if not spec and not steer and not block:
         return "(none)"

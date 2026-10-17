@@ -47,8 +47,19 @@ data/runs/<id>/logs/<node>.jsonl); the write tools add to the run's findings log
 Stopping or failing a run with files leaves the best supported version applied to the user's
 files (the originals if none) and saves the patch, so a half-tried change never stays.
 
-Not built yet: pushing events to connected clients (the SSE stream), human node actions and
-steering re-rates (M4), and acting on fork requests.
+A person's actions (node_action, orchestrator/human.py): keep, park or restore a node. Applied at
+once, or, on a running node, when its step finishes (_apply_pending at the next boundary or
+rewind). Restoring files a "correction" item in the person's vault in the background.
+
+Steering: each instruction is a chip that can be turned off (toggle_instruction). After an
+instruction (once the objectives are amended) or a toggle, an orchestrator run re-rates its tree in
+one batched call and offers 2-3 suggestions (Orchestrator.steer, orchestrator/steering.py); the
+amend agent's fork requests become suggestions too. resolve_suggestion confirms or dismisses one.
+Changes made outside the agent's step are copied onto the level-boundary tree (_mirror), so an
+aborted step's rewind, or a reload, keeps them.
+
+Not built yet: pushing events to connected clients (the SSE stream), and acting on a finished run
+(node actions, instructions and suggestions are refused once it ended).
 """
 
 from __future__ import annotations
@@ -83,12 +94,16 @@ from pruner.core.events import (
     RunFailed,
     RunStarted,
     RunUpdated,
+    SuggestionResolved,
+    SuggestionsReady,
+    VaultItemAdded,
 )
 from pruner.core.llm import LLMCancelled, LLMError
 from pruner.core.models import (
     Caps,
     DeadEnd,
     Finding,
+    HumanAction,
     Instruction,
     InstructionRequest,
     LogEntry,
@@ -100,9 +115,14 @@ from pruner.core.models import (
     RunSnapshot,
     RunVault,
     StartRunRequest,
+    Suggestion,
     TokenUsage,
     ToolCallRecord,
 )
+from pruner.orchestrator import human
+from pruner.orchestrator.actions import room_under, why_blocked
+from pruner.orchestrator.queue import blocked
+from pruner.orchestrator.steering import Job, job_for
 from pruner.runs.command import verify_command
 from pruner.runs.objectives import ObjectiveMaker
 from pruner.runs.store import RunStore
@@ -142,6 +162,14 @@ class QuestionClosed(ValueError):
     """The question was already answered."""
 
 
+class SuggestionClosed(ValueError):
+    """The suggestion was already confirmed, dismissed or replaced."""
+
+
+class InstructionLocked(ValueError):
+    """The research spec cannot be turned off."""
+
+
 class ObjectivesNotReady(ValueError):
     """The run's objectives are not written yet, so it cannot take an instruction."""
 
@@ -171,6 +199,8 @@ class LiveRun:
     workspace: Workspace | None = None
     tool_seen: dict[str, str] = field(default_factory=dict)  # tool results reused within the run
     focus: str | None = None  # a node the orchestrator should run next (a confirmed suggestion)
+    suggestions: list[Suggestion] = field(default_factory=list)
+    jobs: list[Job] = field(default_factory=list)  # expansions a person asked for, run first
     level: int = 0  # depth of the level in progress
     level_start: RunSnapshot | None = None  # the tree when that level was created
     step: asyncio.Task | None = None  # the agent's step in flight, which an instruction aborts
@@ -182,7 +212,8 @@ class LiveRun:
     def snapshot(self) -> RunSnapshot:
         """The tree as it is right now."""
         return RunSnapshot(run=self.run, nodes=self.nodes, dead_ends=self.dead_ends,
-                           questions=self.questions, findings=self.findings)
+                           questions=self.questions, findings=self.findings,
+                           suggestions=self.suggestions)
 
     def saved(self) -> RunSnapshot:
         """What is saved between level boundaries: the live run, with the level in progress as
@@ -193,7 +224,8 @@ class LiveRun:
         nodes = [origin[n.id] if n.depth >= self.level else n
                  for n in self.nodes if n.depth < self.level or n.id in origin]
         return RunSnapshot(run=self.run, nodes=nodes, dead_ends=self.dead_ends,
-                           questions=self.questions, findings=self.findings)
+                           questions=self.questions, findings=self.findings,
+                           suggestions=self.suggestions)
 
 
 class RunManager:
@@ -255,7 +287,7 @@ class RunManager:
                                                       self.store.last_seq(run_id)),
                         nodes=nodes, dead_ends=list(snap.dead_ends),
                         questions=list(snap.questions), findings=list(snap.findings),
-                        level_start=start, level=max((n.depth for n in nodes), default=0),
+                        suggestions=list(snap.suggestions), level_start=start, level=max((n.depth for n in nodes), default=0),
                         workspace=Workspace.load(run_id, self.cfg) if snap.run.paths else None)
         if not snap.run.paused:
             state.gate.set()
@@ -266,7 +298,9 @@ class RunManager:
         self.store.save_snapshot(state.saved())
 
     def _boundary(self, state: LiveRun) -> None:
-        """A level was created or completed: this tree is what a reload goes back to."""
+        """A level was created or completed: this tree is what a reload goes back to. A person's
+        action on a node that was running is applied first."""
+        self._apply_pending(state)
         snap = state.snapshot().model_copy(deep=True)
         state.level_start = snap
         state.level = max((n.depth for n in state.nodes), default=0)
@@ -288,6 +322,23 @@ class RunManager:
         for node in state.nodes:
             if node.depth >= state.level and node.status == "running":
                 state.emitter.emit(NodeUpdated, node=node, change="running")
+        self._apply_pending(state)
+
+    MIRRORED = ("status", "decision", "decided_by", "pending_action", "closed",
+                "directive_score", "directive_reason", "needs_remeasure", "missing_metrics")
+
+    def _mirror(self, state: LiveRun, node: Node) -> None:
+        """Copy a change made outside the agent's step (a person's action, a re-rate) onto the
+        node's copy at the last level boundary, so a rewind or a reload keeps it."""
+        if state.level_start is None:
+            return
+        origin = next((n for n in state.level_start.nodes if n.id == node.id), None)
+        if origin is None:  # created by the step in flight: a rewind removes it anyway
+            return
+        names = ("pending_action",) if node.status == "running" else self.MIRRORED
+        for name in names:
+            setattr(origin, name, copy.deepcopy(getattr(node, name)))
+        self.store.save_level_start(state.level_start)
 
     def _settle_files(self, state: LiveRun) -> None:
         """When a run with files ends early (stop or error), leave the best supported version
@@ -456,6 +507,134 @@ class RunManager:
                           on_call=lambda r: self._log_call(state, node.id, r),
                           seen=state.tool_seen)
 
+    # ---- a person's actions on nodes, and suggestions
+
+    async def node_action(self, run_id: str, node_id: str, action: HumanAction) -> Node:
+        """Keep, park or restore a node (orchestrator/human.py). On a running node it is applied
+        once the node's step finishes. KeyError if the run or node is unknown, RunNotRunning if
+        the run finished, IllegalAction if the action makes no sense for the node."""
+        state = self._running(run_id)
+        node = next((n for n in state.nodes if n.id == node_id), None)
+        if node is None:
+            raise KeyError(node_id)
+        if node.status == "running":
+            human.check(node, action)
+            node.pending_action = action
+            self._mirror(state, node)
+            state.emitter.emit(Activity, node_id=node.id, message=(
+                f"Your {action} on {node.id} applies once its current step finishes."))
+        else:
+            self._apply_human(state, node, action)
+        self._save(state)
+        return node
+
+    def _apply_human(self, state: LiveRun, node: Node, action: HumanAction) -> None:
+        changed = human.apply(state.run, state.nodes, state.dead_ends, node, action)
+        for n, change in changed:
+            self._mirror(state, n)
+            self._log(state, n.id, LogEntry(kind="decision", title=f"{change.capitalize()} by "
+                                                                   f"you", text=""))
+            state.emitter.emit(NodeUpdated, node=n, change=change)
+        state.run.totals.nodes_parked = sum(n.status == "parked" for n in state.nodes)
+        if action != "restore":
+            return
+        state.emitter.emit(RunUpdated, run=state.run)  # nodes_restored
+        if node.experiment is not None and state.workspace is not None:
+            node.closed = False
+            self._mirror(state, node)
+            state.jobs.append(Job(node.id, "more_experiments",
+                                  "A person restored this node: continue from it."))
+        self._file_correction(state, node)
+
+    def _apply_pending(self, state: LiveRun) -> None:
+        """Apply the actions people took on nodes that were running then."""
+        for node in state.nodes:
+            if node.pending_action is None or node.status == "running":
+                continue
+            action, node.pending_action = node.pending_action, None
+            try:
+                self._apply_human(state, node, action)
+            except human.IllegalAction as e:
+                self._mirror(state, node)
+                state.emitter.emit(Activity, node_id=node.id,
+                                   message=f"Your {action} on {node.id} was not applied: {e}.")
+
+    def _file_correction(self, state: LiveRun, node: Node) -> None:
+        """In the background: a "correction" item in the person's vault saying they restored
+        this node, so later runs see the judgement was overturned."""
+        if self.vault is None:
+            return
+        vault, run = self.vault, state.run
+        earlier = next((d.reason for d in reversed(state.dead_ends) if d.node_id == node.id),
+                       "")
+
+        async def file() -> None:
+            try:
+                result = await vault.ingest_learned(
+                    run.primary_person, title=f"Restored: {node.summary or node.description}",
+                    summary=(f"{run.primary_person} restored this branch after it was parked in "
+                             f"run {run.id}" + (f" ({earlier})" if earlier else "") + "."),
+                    source_text=node.description, kind="correction")
+                state.emitter.emit(VaultItemAdded, item=result.item, edges=result.edges)
+            except (LLMError, OSError) as e:  # the vault is a bonus; the run goes on
+                log.warning("could not file the correction for %s: %s", node.id, e)
+
+        self._spawn(state, file())
+
+    def _offer(self, state: LiveRun, suggestions: list[Suggestion]) -> None:
+        """Replace the open suggestions with a new set."""
+        replaced = [s.id for s in state.suggestions if s.status == "open"]
+        for s in state.suggestions:
+            if s.status == "open":
+                s.status = "replaced"
+        state.suggestions.extend(suggestions)
+        if suggestions or replaced:
+            state.emitter.emit(SuggestionsReady, suggestions=suggestions, replaced=replaced)
+
+    async def resolve_suggestion(self, run_id: str, suggestion_id: str,
+                                 confirm: bool) -> Suggestion:
+        """Confirm (act on it) or dismiss a suggestion. Confirming: run -> that node runs next;
+        restore -> it is restored; expand / remeasure -> new hypotheses from it before the next
+        experiment. KeyError if the run or suggestion is unknown, RunNotRunning if the run
+        finished, SuggestionClosed if already answered, IllegalAction if it no longer fits."""
+        state = self._running(run_id)
+        s = next((x for x in state.suggestions if x.id == suggestion_id), None)
+        if s is None:
+            raise KeyError(suggestion_id)
+        if s.status != "open":
+            raise SuggestionClosed(f"suggestion {suggestion_id} is already {s.status}")
+        if confirm:
+            node = next((n for n in state.nodes if n.id == s.node_id), None)
+            if node is None:
+                raise human.IllegalAction(f"{s.node_id} is no longer in the tree")
+            self._act_on(state, s, node)
+        s.status = "confirmed" if confirm else "dismissed"
+        state.emitter.emit(SuggestionResolved, suggestion=s)
+        self._save(state)
+        return s
+
+    def _act_on(self, state: LiveRun, s: Suggestion, node: Node) -> None:
+        if s.action == "run":
+            if node.status != "pending" or blocked(node, {n.id: n for n in state.nodes}):
+                raise human.IllegalAction(f"{node.id} is not waiting to run")
+            state.focus = node.id
+            state.emitter.emit(Activity, node_id=node.id, message=f"{node.id} runs next.")
+        elif s.action == "restore":
+            self._apply_human(state, node, "restore")
+        else:
+            if room_under(state.run, state.nodes, node) <= 0:
+                raise human.IllegalAction(f"no room: {why_blocked(state.run, state.nodes, node)}")
+            job = job_for(s, node)
+            assert job is not None
+            node.closed = False
+            self._mirror(state, node)
+            state.jobs.append(job)
+            state.emitter.emit(Activity, node_id=node.id, message=(
+                f"New hypotheses from {node.id} ({job.mode.replace('_', ' ')}) come before "
+                f"the next experiment."))
+
+    # ---- instructions
+
     async def instruct(self, run_id: str, req: InstructionRequest) -> Instruction:
         """Record a mid-run prompt now; amend the objectives and re-check the tree in the
         background. While a step is running (and the run is not paused) the step is aborted
@@ -475,7 +654,35 @@ class RunManager:
         if not state.run.paused and state.step is not None and not state.step.done():
             state.aborting = True
             state.step.cancel()
-        self._spawn(state, self._amend(state, instruction))
+        self._spawn(state, self._amend(state, instruction,
+                                       f'a new instruction was added: "{instruction.text}"'))
+        return instruction
+
+    async def toggle_instruction(self, run_id: str, instruction_id: str,
+                                 active: bool) -> Instruction:
+        """Turn a steering chip on or off. It is left out of every prompt while off, and the tree
+        is re-rated before the next step (the step in flight is not aborted). KeyError if the
+        run or instruction is unknown, RunNotRunning if the run finished, ObjectivesNotReady
+        before the objectives exist, InstructionLocked for the research spec."""
+        state = self._running(run_id)
+        if not state.run.objectives:
+            raise ObjectivesNotReady
+        instruction = next((i for i in state.run.instructions if i.id == instruction_id), None)
+        if instruction is None:
+            raise KeyError(instruction_id)
+        if instruction.kind == "spec":
+            raise InstructionLocked("the research spec is always on")
+        if instruction.active == active:
+            return instruction
+        instruction.active = active
+        state.emitter.emit(RunUpdated, run=state.run)
+        self._save(state)
+        if self.orchestrator is not None and state.workspace is not None:
+            state.amends_open += 1
+            state.amends_idle.clear()
+            self._spawn(state, self._amend(
+                state, None, f'the instruction "{instruction.text}" was turned '
+                             f'{"back on" if active else "off"}', instruction_id=instruction.id))
         return instruction
 
     async def pause(self, run_id: str) -> Run:
@@ -534,30 +741,22 @@ class RunManager:
         while (state := self._live.get(run_id)) and state.tasks:
             await asyncio.gather(*list(state.tasks), return_exceptions=True)
 
-    async def _amend(self, state: LiveRun, instruction: Instruction) -> None:
+    async def _amend(self, state: LiveRun, instruction: Instruction | None, change: str, *,
+                     instruction_id: str | None = None) -> None:
+        """Apply a new instruction (objectives, then the amend agent), or just a toggled chip
+        (instruction None); then, for an orchestrator run, the steering re-rate."""
         run, emitter = state.run, state.emitter
         try:
             async with state.amend_lock:
                 with self._scopes(run.id):
                     await self._checkpoint(state)
-                    new = await self.objectives.amend(
-                        run.objectives, instruction, question=run.question,
-                        directives=run.directives)
-                    if not new:
-                        emitter.emit(Activity, message="The instruction added no new objectives.")
-                    else:
-                        run.objectives = [*run.objectives, *new]
-                        emitter.emit(ObjectivesUpdated, objectives=run.objectives)
-                        if self.amender is not None and state.nodes:
-                            result = await self.amender.run(
-                                run, state.nodes, lambda: self._checkpoint(state))
-                            by_id = {n.id: n for n in state.nodes}
-                            for s in result.rated:
-                                emitter.emit(NodeUpdated, node=by_id[s.node_id], change="scored")
-                            for fork in result.forks:
-                                emitter.emit(
-                                    Activity, node_id=fork.node_id,
-                                    message=f"Backtracking: fork requested here. {fork.reason}")
+                    forks = []
+                    if instruction is not None:
+                        forks = await self._amend_objectives(state, instruction)
+                    if self.orchestrator is not None and state.workspace is not None:
+                        await self.orchestrator.steer(
+                            self, state, change=change, forks=forks,
+                            instruction_id=instruction.id if instruction else instruction_id)
         except (LLMCancelled, asyncio.CancelledError):
             log.info("amendment for run %s was stopped", run.id)
         except (LLMError, ValueError, OSError) as e:  # a failed amendment does not end the run
@@ -572,6 +771,28 @@ class RunManager:
             state.amends_open -= 1
             if state.amends_open == 0:
                 state.amends_idle.set()
+
+    async def _amend_objectives(self, state: LiveRun, instruction: Instruction) -> list:
+        """New objectives from the instruction; if any, the amend agent re-rates the tree and
+        may request forks (returned, so steering can offer them as suggestions)."""
+        run, emitter = state.run, state.emitter
+        new = await self.objectives.amend(run.objectives, instruction, question=run.question,
+                                          directives=run.directives)
+        if not new:
+            emitter.emit(Activity, message="The instruction added no new objectives.")
+            return []
+        run.objectives = [*run.objectives, *new]
+        emitter.emit(ObjectivesUpdated, objectives=run.objectives)
+        if self.amender is None or not state.nodes:
+            return []
+        result = await self.amender.run(run, state.nodes, lambda: self._checkpoint(state))
+        by_id = {n.id: n for n in state.nodes}
+        for s in result.rated:
+            emitter.emit(NodeUpdated, node=by_id[s.node_id], change="scored")
+        for fork in result.forks:
+            emitter.emit(Activity, node_id=fork.node_id,
+                         message=f"Backtracking: fork requested here. {fork.reason}")
+        return result.forks
 
     async def _step(self, state: LiveRun, make: Callable[[], Awaitable[T]]) -> T:
         """Run one step of the agent (`make()` starts it). An instruction that arrives meanwhile

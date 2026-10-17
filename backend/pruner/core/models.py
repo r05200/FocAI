@@ -48,6 +48,11 @@ NextAction = Literal["more_experiments", "new_hypothesis", "diagnose", "combine"
 PreBand = Literal["low", "medium", "high"]  # how the UI shows a pre-score (from its zone)
 AgentPhase = Literal["hypothesis", "synthesis"]
 LogKind = Literal["thought", "tool_call", "tool_result", "decision", "activity", "error"]
+HumanAction = Literal["keep", "park", "restore"]
+# What confirming a suggestion does: run = run this waiting node next; expand = new hypotheses
+# from this node; restore = bring this parked node back; remeasure = an experiment that adds the
+# measurement the instruction needs.
+SuggestionAction = Literal["run", "expand", "restore", "remeasure"]
 
 
 def new_id(prefix: str) -> str:
@@ -288,8 +293,15 @@ class Node(BaseModel):
     pre_band: PreBand | None = None
     closed: bool = False  # the agent chose "stop" here: no more children from this node
     priority: float | None = None  # its place in the queue, recomputed by the orchestrator
+    # The latest steering re-rate (one batched call after an instruction or a chip toggle): how
+    # relevant this node is to what is asked now (0..1), and why. It moves the node in the queue.
+    directive_score: float | None = Field(default=None, ge=0, le=1)
+    directive_reason: str = ""
+    # The re-rate says the instruction needs a result this node's experiment did not measure.
     needs_remeasure: bool = False
     missing_metrics: list[str] = Field(default_factory=list)
+    # A person's keep/park/restore on a running node, applied once its step has finished.
+    pending_action: HumanAction | None = None
     tool_calls: dict[str, int] = Field(default_factory=dict)  # calls used, per phase
     created_at: float = Field(default_factory=time.time)
 
@@ -316,6 +328,9 @@ class Instruction(BaseModel):
     id: str = Field(default_factory=lambda: new_id("i"))
     kind: InstructionKind
     text: str
+    # Steering instructions show as chips that can be turned off (PATCH .../instructions/{id});
+    # an inactive one is left out of every prompt. The spec is always active.
+    active: bool = True
     created_at: float = Field(default_factory=time.time)
 
 
@@ -460,6 +475,24 @@ class RunVault(BaseModel):
     ideas: list[RunIdea] = Field(default_factory=list)
 
 
+class Suggestion(BaseModel):
+    """Where the run could continue from, offered after a steering re-rate (2-3, from different
+    families) or where the amend agent asked for a fork. No LLM: ranked from the re-rate."""
+
+    id: str = Field(default_factory=lambda: new_id("s"))
+    run_id: str
+    node_id: str
+    action: SuggestionAction
+    reason: str
+    family: str | None = None
+    score: float = Field(default=0.0, ge=0, le=1)  # 0.6 x directive score + 0.4 x priority
+    source: Literal["steer", "fork"] = "steer"
+    instruction_id: str | None = None  # the instruction (or toggled chip) that led to it
+    # replaced = a later re-rate offered a new set before this one was answered
+    status: Literal["open", "confirmed", "dismissed", "replaced"] = "open"
+    created_at: float = Field(default_factory=time.time)
+
+
 class RunSnapshot(BaseModel):
     """Full state of a run, for page reloads and replay. Live changes arrive as events."""
 
@@ -468,6 +501,7 @@ class RunSnapshot(BaseModel):
     dead_ends: list[DeadEnd] = Field(default_factory=list)
     questions: list[Question] = Field(default_factory=list)
     findings: list[Finding] = Field(default_factory=list)
+    suggestions: list[Suggestion] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- API requests
@@ -509,6 +543,12 @@ class InstructionRequest(BaseModel):
     text: str = Field(min_length=1)
     # The current list of active directives, replacing the run's previous list. Omit to keep it.
     directives: list[str] | None = None
+
+
+class InstructionToggle(BaseModel):
+    """Body of PATCH /runs/{id}/instructions/{instruction_id}: turn a steering chip on or off."""
+
+    active: bool
 
 
 class IngestRequest(BaseModel):

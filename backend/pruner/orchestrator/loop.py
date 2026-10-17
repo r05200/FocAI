@@ -7,7 +7,8 @@ agent turn). The run:
      them the run stops: nothing can be compared);
   3. expands n1: 2-3 validated, pre-scored hypotheses (orchestrator/proposer.py);
   4. repeats, one step at a time (each step can be paused, stopped, or aborted by an instruction):
-       pick the best waiting node, keeping other families alive (orchestrator/queue.py),
+       first any expansion a person asked for (a confirmed suggestion or a restore: state.jobs),
+       else pick the best waiting node, keeping other families alive (orchestrator/queue.py),
        run its experiment in place (orchestrator/experiment.py),
        judge it and log the finding (orchestrator/synthesis.py),
        turn the agent's next action into an expansion within the budget
@@ -18,6 +19,11 @@ agent turn). The run:
      files if nothing was supported), the patch from the originals is saved
      (GET /runs/{id}/patch), and a final report is written.
 
+Steering (steer): after an instruction or a chip toggle, the manager's amendment task calls
+steer(), which re-rates the tree in one batched call and offers suggestions
+(orchestrator/steering.py). A person's keep/park/restore is applied by the manager
+(orchestrator/human.py); the loop just sees the new statuses.
+
 The orchestrator never touches the run's bookkeeping directly: it uses the manager (events,
 logs, level boundaries, the pause gate, the abortable step).
 """
@@ -25,6 +31,7 @@ logs, level boundaries, the pause gate, the abortable step).
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
@@ -34,14 +41,17 @@ from pruner.core import prompts
 from pruner.core.config import Config, get_config
 from pruner.core.events import Activity, NodeCreated, NodeUpdated, ObjectivesUpdated
 from pruner.core.llm import LLM, LLMError
-from pruner.core.models import DeadEnd, LogEntry, Node
-from pruner.orchestrator.actions import experiments_run, plan_action
+from pruner.core.models import DeadEnd, ForkRequest, LogEntry, Node
+from pruner.orchestrator import steering
+from pruner.orchestrator.actions import experiments_run, plan_action, room_under, why_blocked
 from pruner.orchestrator.experiment import ExperimentPhase, Runner, describe
 from pruner.orchestrator.proposer import HypothesisPhase
 from pruner.orchestrator.queue import select_next
+from pruner.orchestrator.steering import Job
 from pruner.orchestrator.synthesis import SynthesisPhase, baseline_text
 from pruner.pruning.postscorer import PostScorer
 from pruner.pruning.prescorer import PreScorer
+from pruner.pruning.scale import to_ten
 from pruner.workspace.runner import run_command
 
 if TYPE_CHECKING:
@@ -58,8 +68,8 @@ class BaselineFailed(RuntimeError):
 
 def best_node(nodes: list[Node]) -> Node | None:
     """The supported, measured node with the best judge score (then confidence), if any."""
-    good = [n for n in nodes if n.verdict == "supported" and n.experiment is not None
-            and not n.experiment.error and n.version]
+    good = [n for n in nodes if n.verdict == "supported" and n.status == "done"
+            and n.experiment is not None and not n.experiment.error and n.version]
     return max(good, key=lambda n: (n.post_score or 0.0,
                                     n.synthesis.confidence if n.synthesis else 0.0),
                default=None)
@@ -110,6 +120,13 @@ class Orchestrator:
         while True:
             await host._checkpoint(state)
             await state.amends_idle.wait()
+            if state.jobs:  # what a person asked for goes first; dropped only once it is done
+                job = state.jobs[0]
+                await host._step(state, lambda j=job: self._run_job(host, state, j))
+                if job in state.jobs:
+                    state.jobs.remove(job)
+                host._boundary(state)
+                continue
             if experiments_run(state.nodes) >= run.caps.node_budget:
                 emitter.emit(Activity, message=f"The experiment budget ({run.caps.node_budget})"
                                                f" is used up.")
@@ -155,6 +172,8 @@ class Orchestrator:
         """Run one waiting node through experiment and synthesis, then act on its advice."""
         run = state.run
         assert state.workspace is not None and run.command is not None
+        if node.status != "pending":  # a person parked it between its selection and now
+            return
         node.status, node.phase = "running", "experiment"
         host._emit(state, NodeUpdated, node=node, change="running")
         host._log(state, node.id, LogEntry(kind="activity", title="Running the experiment",
@@ -189,6 +208,69 @@ class Orchestrator:
         await host._checkpoint(state)
         await self.hypothesis.expand(host, state, plan.parent, mode=plan.mode, brief=plan.brief,
                                      count=plan.count)
+
+    async def _run_job(self, host: RunManager, state: LiveRun, job: Job) -> None:
+        node = next((n for n in state.nodes if n.id == job.node_id), None)
+        if node is None:
+            return
+        room = room_under(state.run, state.nodes, node)
+        if room <= 0:
+            host._log(state, node.id, LogEntry(
+                kind="decision", title=f"Could not {job.mode.replace('_', ' ')} here",
+                text=f"Asked for by a person, but {why_blocked(state.run, state.nodes, node)}."))
+            return
+        await self.hypothesis.expand(host, state, node, mode=job.mode, brief=job.brief,
+                                     count=min(job.count, room))
+
+    # ---- steering
+
+    async def steer(self, host: RunManager, state: LiveRun, *, change: str,
+                    instruction_id: str | None, forks: Sequence[ForkRequest] = ()) -> None:
+        """One batched re-rate of the tree after an instruction or a chip toggle, then new
+        suggestions (orchestrator/steering.py). Called by the manager's amendment task."""
+        run = state.run
+        targets = steering.rerate_targets(state.nodes)
+        if not targets:
+            return
+        await host._checkpoint(state)
+        root = next((n for n in state.nodes if n.parent_id is None), None)
+        measured = (", ".join(sorted(root.experiment.metrics))
+                    if root and root.experiment and root.experiment.metrics else "(none)")
+        scored = await self.prescorer.rate_for_directive(
+            targets, question=run.question, objectives=run.objectives, change=change,
+            instructions=run.instructions, directives=run.directives,
+            findings="\n".join(f"- {f.node_id or '-'} [{f.verdict}] {f.text}"
+                               for f in state.findings[-15:]) or "(none)",
+            measured=measured)
+        by_id = {n.id: n for n in state.nodes}
+        counts = {"parked": 0, "restored": 0}
+        for s in scored:
+            node = by_id.get(s.node_id)
+            if node is None:  # removed by a rewind meanwhile
+                continue
+            what = steering.apply_rerate(node, s, self.cfg)
+            if what == "parked":
+                state.dead_ends.append(DeadEnd(run_id=run.id, node_id=node.id,
+                                               description=node.description,
+                                               reason=node.decision.reason
+                                               if node.decision else "parked"))
+            elif what == "restored":
+                state.dead_ends[:] = [d for d in state.dead_ends if d.node_id != node.id]
+            counts[what] = counts.get(what, 0) + 1
+            host._mirror(state, node)
+            host._log(state, node.id, LogEntry(
+                kind="decision",
+                title=f"Re-rated for the new direction: {to_ten(s.relevant):.1f} / 10",
+                text=s.reason + (f"\nNeeds re-measuring: {', '.join(node.missing_metrics)} was "
+                                 f"not measured." if node.needs_remeasure else "")))
+            host._emit(state, NodeUpdated, node=node, change=what)
+        select_next(state.nodes)  # refresh the queue priorities the suggestions use
+        remeasure = sum(n.needs_remeasure for n in state.nodes)
+        host._emit(state, Activity, message=(
+            f"Re-rated {len(scored)} node(s) for the new direction: {counts['parked']} parked, "
+            f"{counts['restored']} back in the queue, {remeasure} need re-measuring."))
+        host._offer(state, steering.suggest(run, state.nodes, self.cfg,
+                                            instruction_id=instruction_id, forks=forks))
 
     def _covered(self, state: LiveRun) -> bool:
         """Every objective advanced by some finished node, and the best node said stop."""

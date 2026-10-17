@@ -28,6 +28,7 @@ import logging
 import re
 from collections.abc import Collection
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 from pydantic import BaseModel, Field
@@ -290,11 +291,13 @@ class VaultStore:
             return await self._file(item)
 
     async def ingest_learned(self, person: str, title: str, summary: str,
-                             source_text: str = "") -> IngestResult:
-        """File something a run learned (kind "learned"). The title and summary are already
+                             source_text: str = "",
+                             kind: Literal["learned", "correction"] = "learned") -> IngestResult:
+        """File something a run learned (kind "learned"), or a person's correction of the run
+        (kind "correction", e.g. restoring a parked branch). The title and summary are already
         written, so no draft LLM call is made: only the embedding and the link labels."""
         async with self._lock:
-            item = VaultItem(person=person, kind="learned", title=one_line(title),
+            item = VaultItem(person=person, kind=kind, title=one_line(title),
                              summary=one_line(summary),
                              source_text=(source_text or summary).strip()[:MAX_INGEST_CHARS])
             return await self._file(item)
