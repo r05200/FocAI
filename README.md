@@ -8,8 +8,9 @@ Agents explore, humans steer, and the tree shows everyone what is happening and 
 - **Vault tab:** a mind map of what a person has read, noted or asked. The agent searches it, so
   "relevant" means relevant *and new to this person*.
 
-**Status:** scaffolding only. Data shapes, event schema, config and frontend fixtures exist;
-the agent, vault and UI are not built yet.
+**Status:** the vault backend works end to end (ingest with LLM title/blurb/tags, embeddings,
+similarity links labelled contradicts / supports / agrees / unrelated). The agent, tree and UI
+are not built yet.
 
 ## Layout
 
@@ -35,8 +36,15 @@ cd backend && uv run uvicorn pruner.api.app:app --reload --port 8000   # docs at
 cd frontend && npm run dev
 ```
 
-All routes under `/api` are declared with their request and response models but return `501`
-until built (only `/api/health` is live).
+All routes under `/api` are declared with their request and response models. Live so far:
+`/api/health` and the `/api/vault/*` routes; the rest return `501` until built.
+
+Try an ingest (needs `GEMINI_API_KEY` in `.env`):
+
+```sh
+curl -s localhost:8000/api/vault/items -H 'content-type: application/json' \
+  -d '{"person": "alice", "kind": "note", "text": "4-bit KV cache quantization hurt recall past 32k"}'
+```
 
 ## Checks
 

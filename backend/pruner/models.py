@@ -15,6 +15,11 @@ from typing import Literal
 from pydantic import BaseModel, Field, computed_field
 
 VaultKind = Literal["paper", "note", "question", "correction", "learned"]
+# How a newly ingested item relates to one of its nearest neighbors, as judged by the vault LLM.
+# supports = gives evidence for the other's claim; agrees = reaches the same view independently;
+# contradicts = the claims conflict; unrelated = similar wording or topic, but no bearing.
+VaultRelation = Literal["contradicts", "supports", "agrees", "unrelated"]
+PERSON_PATTERN = r"^[a-z0-9_-]{1,32}$"  # also used as a filename
 NodeType = Literal["hypothesis", "experiment", "reading"]
 # pending = proposed and passed pre-scoring, waiting to run; pruned covers both pre- and
 # post-scoring prunes (see Decision.stage).
@@ -55,9 +60,13 @@ class VaultItem(VaultItemView):
 
 
 class VaultEdge(BaseModel):
+    """Undirected link created at ingest time: source is the newer item, target the older one."""
+
     source: str
     target: str
-    weight: float  # cosine similarity
+    weight: float  # cosine similarity of the two embeddings
+    relation: VaultRelation
+    reason: str  # one line, written by the vault LLM
 
 
 class VaultGraph(BaseModel):
@@ -207,10 +216,15 @@ class StartRunRequest(BaseModel):
 
 
 class IngestRequest(BaseModel):
-    person: str
+    person: str = Field(pattern=PERSON_PATTERN)
     kind: VaultKind = "note"
-    text: str
+    text: str = Field(min_length=1)
     title: str | None = None  # optional override; otherwise the ingest LLM writes one
+
+
+class IngestResult(BaseModel):
+    item: VaultItemView
+    edges: list[VaultEdge]  # links to the new item's nearest neighbors, with relations
 
 
 class AnswerRequest(BaseModel):

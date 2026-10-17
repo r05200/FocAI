@@ -3,8 +3,8 @@
 Everything is overridable with a PRUNER_* environment variable (or a .env file at the repo
 root), so tuning during the hackathon never means editing code.
 
-NOTE: the Gemini model names below are defaults only. They have NOT been checked against the
-models this API key can access; verify that in the LLM wrapper step before relying on them.
+Gemini defaults were probed with real calls on 2026-10-17. The 2.5 models are listed but refuse
+new users (404), and the Pro models had no quota on this key (429), so "strong" is 3.5 Flash.
 """
 
 from __future__ import annotations
@@ -40,6 +40,8 @@ class Config:
     fast_model: str  # scoring and ingestion
     strong_model: str  # planning and synthesis
     embedding_model: str
+    embedding_dim: int  # Gemini embeddings are truncated to this many dimensions
+    vault_model: str  # dedicated to vault ingestion and relation labelling
     temperature: float
 
     # --- Agent caps (PRD: depth ~4, branching ~3, ~25 nodes) ---
@@ -56,7 +58,10 @@ class Config:
     # --- Vault ---
     similarity_threshold: float  # below this, vault search returns nothing
     search_top_k: int
-    neighbors_per_item: int  # edges per node in the mind map
+    neighbors_per_item: int  # max edges created when an item is ingested
+    # Min cosine similarity for an ingest-time edge. Arbitrary for now; gemini-embedding-001 at
+    # 768 dims gave ~0.93-0.96 for related items and ~0.70 for an off-topic one.
+    link_threshold: float
 
     # --- API ---
     cors_origins: tuple[str, ...]  # the Vite dev server by default
@@ -75,9 +80,11 @@ def get_config() -> Config:
     data_dir = Path(_env("DATA_DIR", str(REPO_ROOT / "data")))
     return Config(
         gemini_api_key=os.environ.get("GEMINI_API_KEY", ""),
-        fast_model=_env("FAST_MODEL", "gemini-2.5-flash-lite"),
-        strong_model=_env("STRONG_MODEL", "gemini-2.5-pro"),
+        fast_model=_env("FAST_MODEL", "gemini-3.5-flash-lite"),
+        strong_model=_env("STRONG_MODEL", "gemini-3.5-flash"),
         embedding_model=_env("EMBEDDING_MODEL", "gemini-embedding-001"),
+        embedding_dim=_env_int("EMBEDDING_DIM", 768),
+        vault_model=_env("VAULT_MODEL", "gemini-3.5-flash-lite"),
         temperature=_env_float("TEMPERATURE", 0.1),
         max_depth=_env_int("MAX_DEPTH", 4),
         branching=_env_int("BRANCHING", 3),
@@ -89,6 +96,7 @@ def get_config() -> Config:
         similarity_threshold=_env_float("SIMILARITY_THRESHOLD", 0.6),
         search_top_k=_env_int("SEARCH_TOP_K", 5),
         neighbors_per_item=_env_int("NEIGHBORS_PER_ITEM", 3),
+        link_threshold=_env_float("LINK_THRESHOLD", 0.8),
         cors_origins=tuple(
             o.strip()
             for o in _env("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")

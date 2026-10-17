@@ -91,34 +91,39 @@
   ],
   "edges": [
     {
-      "source": "v_a1",
-      "target": "v_a3",
-      "weight": 0.83
-    },
-    {
-      "source": "v_a1",
-      "target": "v_a2",
-      "weight": 0.55
+      "source": "v_a3",
+      "target": "v_a1",
+      "weight": 0.83,
+      "relation": "supports",
+      "reason": "The survey's quantization results bear directly on the recall question."
     },
     {
       "source": "v_a2",
-      "target": "v_b2",
-      "weight": 0.79
-    },
-    {
-      "source": "v_b1",
-      "target": "v_b2",
-      "weight": 0.58
+      "target": "v_a1",
+      "weight": 0.55,
+      "relation": "unrelated",
+      "reason": "Both mention decoding cost, but neither speaks to the other's claim."
     },
     {
       "source": "v_b2",
-      "target": "v_b3",
-      "weight": 0.52
+      "target": "v_a2",
+      "weight": 0.79,
+      "relation": "contradicts",
+      "reason": "Bob says latency framing still matters; Alice's note says the topic is settled."
     },
     {
-      "source": "v_a1",
-      "target": "v_b3",
-      "weight": 0.61
+      "source": "v_b2",
+      "target": "v_b1",
+      "weight": 0.58,
+      "relation": "agrees",
+      "reason": "Both say users judge agents by what they perceive, not raw throughput."
+    },
+    {
+      "source": "v_b3",
+      "target": "v_a1",
+      "weight": 0.61,
+      "relation": "supports",
+      "reason": "Prompt compression results add evidence on accuracy cost of shrinking context."
     }
   ]
 }

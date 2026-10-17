@@ -12,7 +12,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter
 
-from .models import Criterion, Node, Question, Run, VaultItemView
+from .models import Criterion, Node, Question, Run, VaultEdge, VaultItemView
 
 
 class EventBase(BaseModel):
@@ -61,7 +61,7 @@ class VaultItemAdded(EventBase):
 
     type: Literal["vault_item_added"] = "vault_item_added"
     item: VaultItemView
-    neighbor_ids: list[str]
+    edges: list[VaultEdge]
 
 
 class Activity(EventBase):

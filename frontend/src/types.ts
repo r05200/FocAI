@@ -3,6 +3,7 @@
 // tests (backend/tests), so a drift shows up there first.
 
 export type VaultKind = 'paper' | 'note' | 'question' | 'correction' | 'learned'
+export type VaultRelation = 'contradicts' | 'supports' | 'agrees' | 'unrelated'
 export type NodeType = 'hypothesis' | 'experiment' | 'reading'
 export type NodeStatus = 'pending' | 'running' | 'done' | 'pruned' | 'failed'
 export type Verdict = 'keep' | 'prune'
@@ -25,10 +26,13 @@ export interface VaultItemView {
   created_at: number
 }
 
+// Undirected; source is the newer item, target the older one.
 export interface VaultEdge {
   source: string
   target: string
   weight: number
+  relation: VaultRelation
+  reason: string
 }
 
 export interface VaultGraph {
@@ -163,6 +167,11 @@ export interface IngestRequest {
   title?: string | null
 }
 
+export interface IngestResult {
+  item: VaultItemView
+  edges: VaultEdge[]
+}
+
 export interface AnswerRequest {
   answer: string
 }
@@ -190,7 +199,7 @@ export type PrunerEvent =
       item_ids: string[]
       similarities: number[]
     })
-  | (EventBase & { type: 'vault_item_added'; item: VaultItemView; neighbor_ids: string[] })
+  | (EventBase & { type: 'vault_item_added'; item: VaultItemView; edges: VaultEdge[] })
   | (EventBase & { type: 'activity'; message: string; node_id: string | null })
   | (EventBase & { type: 'question_asked'; question: Question })
   | (EventBase & { type: 'question_answered'; question: Question })

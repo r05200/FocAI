@@ -86,13 +86,21 @@ def _vault_items() -> list[VaultItemView]:
 
 
 def _vault_graph(items: list[VaultItemView]) -> VaultGraph:
+    def edge(source: str, target: str, weight: float, relation: str, reason: str) -> VaultEdge:
+        return VaultEdge(source=source, target=target, weight=weight,
+                         relation=relation, reason=reason)  # type: ignore[arg-type]
+
     edges = [
-        VaultEdge(source="v_a1", target="v_a3", weight=0.83),
-        VaultEdge(source="v_a1", target="v_a2", weight=0.55),
-        VaultEdge(source="v_a2", target="v_b2", weight=0.79),
-        VaultEdge(source="v_b1", target="v_b2", weight=0.58),
-        VaultEdge(source="v_b2", target="v_b3", weight=0.52),
-        VaultEdge(source="v_a1", target="v_b3", weight=0.61),
+        edge("v_a3", "v_a1", 0.83, "supports",
+             "The survey's quantization results bear directly on the recall question."),
+        edge("v_a2", "v_a1", 0.55, "unrelated",
+             "Both mention decoding cost, but neither speaks to the other's claim."),
+        edge("v_b2", "v_a2", 0.79, "contradicts",
+             "Bob says latency framing still matters; Alice's note says the topic is settled."),
+        edge("v_b2", "v_b1", 0.58, "agrees",
+             "Both say users judge agents by what they perceive, not raw throughput."),
+        edge("v_b3", "v_a1", 0.61, "supports",
+             "Prompt compression results add evidence on accuracy cost of shrinking context."),
     ]
     return VaultGraph(nodes=items, edges=edges)
 
@@ -217,7 +225,12 @@ def _build() -> dict[str, Any]:
         summary="I restored a pruned speculative-decoding branch; the latency angle was new.",
         tags=["speculative-decoding", "latency"], retrieval_count=0, created_at=T0 + 31,
         source_text="Human override: restore n_spec.")
-    ev.emit(VaultItemAdded, 31, item=correction, neighbor_ids=["v_a2", "v_b2"])
+    ev.emit(VaultItemAdded, 31, item=correction, edges=[
+        VaultEdge(source="v_c1", target="v_a2", weight=0.81, relation="contradicts",
+                  reason="The restored branch was useful, so the topic was not fully covered."),
+        VaultEdge(source="v_c1", target="v_b2", weight=0.77, relation="agrees",
+                  reason="Both conclude the end-user latency angle is worth keeping."),
+    ])
     ev.emit(Activity, 31, message="Added your correction to your vault.")
     spec = spec.model_copy(deep=True, update={"status": "running"})
     ev.emit(NodeUpdated, 32, node=spec, change="running")

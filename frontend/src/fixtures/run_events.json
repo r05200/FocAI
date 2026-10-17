@@ -585,9 +585,21 @@
       "retrieval_count": 0,
       "created_at": 1760000031.0
     },
-    "neighbor_ids": [
-      "v_a2",
-      "v_b2"
+    "edges": [
+      {
+        "source": "v_c1",
+        "target": "v_a2",
+        "weight": 0.81,
+        "relation": "contradicts",
+        "reason": "The restored branch was useful, so the topic was not fully covered."
+      },
+      {
+        "source": "v_c1",
+        "target": "v_b2",
+        "weight": 0.77,
+        "relation": "agrees",
+        "reason": "Both conclude the end-user latency angle is worth keeping."
+      }
     ]
   },
   {
