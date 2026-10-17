@@ -28,6 +28,12 @@ dist-ssr
 .env.*
 !.env.example
 
+# Frontend build and tooling output
+*.tsbuildinfo
+.vite/
+coverage/
+.eslintcache
+
 # Python
 __pycache__/
 *.pyc
