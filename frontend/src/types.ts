@@ -23,6 +23,13 @@ export const PERSON_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/
 
 // ---- vault
 
+// A spot on the 3D vault map.
+export interface Position {
+  x: number
+  y: number
+  z: number
+}
+
 export interface VaultItemView {
   id: string
   person: string
@@ -32,6 +39,12 @@ export interface VaultItemView {
   tags: string[]
   source_text: string
   investigate: boolean
+  // Set once a person has moved the card by hand (the Move tool). Always wins over auto_position,
+  // and a card with a position is pinned there.
+  position?: Position | null
+  // The backend's automatic layout (similar items close together). Where to start cards that were
+  // never moved.
+  auto_position?: Position | null
   retrieval_count: number
   created_at: number
 }
@@ -99,6 +112,7 @@ export interface TokenUsage {
 
 // ---- tree
 
+// FLAG (ignore unless asked): backend class is `Node`; this name differs from the backend.
 export interface TreeNode {
   id: string
   run_id: string
@@ -223,6 +237,20 @@ export interface VaultSummary {
   item_count: number
 }
 
+// PATCH /api/vault/items/{id}/position -> 204. The Move tool: where a card now sits.
+export type MoveItemRequest = Position
+
+// PATCH /api/vault/positions -> 204: several moves at once; an unknown id rejects all (404).
+export interface MoveItemsRequest {
+  positions: (Position & { id: string })[]
+}
+
+// POST /api/vault/layout/regenerate -> VaultGraph. Recomputes every automatic position; manual
+// moves are kept unless reset_moved is true.
+export interface RegenerateLayoutRequest {
+  reset_moved?: boolean
+}
+
 // POST /api/vault/directives -> Directive
 export interface DirectiveRequest {
   person: string
@@ -269,3 +297,45 @@ export type PrunerEvent =
   | (EventBase & { type: 'question_answered'; question: Question })
   | (EventBase & { type: 'run_completed'; run: Run })
   | (EventBase & { type: 'run_failed'; error: string })
+
+// ---- other finished routes
+
+// GET /api/runs/{id}/forks: where the amend agent asked to restart exploration (not built yet).
+export interface ForkRequest {
+  id: string
+  run_id: string
+  node_id: string
+  reason: string
+  objective_ids: string[]
+  status: 'requested'
+  created_at: number
+}
+
+// POST /api/runs/{id}/stop -> 202 (404 unknown run, 409 already finished).
+export interface StopResult {
+  run_id: string
+  cancelled_calls: number
+}
+
+// GET /api/prompts and /api/prompts/{name}: the templates sent to the LLM (read-only).
+export interface PromptInfo {
+  name: string
+  text: string
+  placeholders: string[]
+}
+
+// GET /api/config: what the UI may show. Scores are on the 1 to 10 scale.
+export interface PublicConfig {
+  fast_model: string
+  strong_model: string
+  vault_model: string
+  embedding_model: string
+  max_depth: number
+  branching: number
+  node_budget: number
+  pre_score_min: number
+  run_score_min: number
+  post_score_min: number
+  rescore_park_below: number
+  backtrack_below: number
+}

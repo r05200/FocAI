@@ -7,6 +7,10 @@
   instant and deterministic. Cache hits still report the tokens the original call cost, so cost
   comparisons are the same whether or not the cache was warm.
 - Token usage is accumulated per `purpose` (e.g. "vault_ingest", "scorer") in self.usage.
+- stop(): cancels calls that are in flight. Every API call runs as its own asyncio task that is
+  tracked with the scope it was started in, so stopping cancels the task (and with it the HTTP
+  request) and the caller gets LLMCancelled. Calls are scoped with `with llm.scope(run_id):`;
+  stopping a scope also refuses its later calls, so an agent loop cannot start the next step.
 """
 
 from __future__ import annotations
@@ -15,9 +19,12 @@ import asyncio
 import hashlib
 import json
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Generic, TypeVar
+from typing import Any, Generic, Literal, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -31,8 +38,18 @@ RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 MAX_API_ATTEMPTS = 3
 
 
+Role = Literal["agent", "supporting"]
+
+
 class LLMError(RuntimeError):
     pass
+
+
+class LLMCancelled(LLMError):
+    """The call was stopped by LLM.stop() before it finished."""
+
+
+_scope: ContextVar[str | None] = ContextVar("llm_scope", default=None)
 
 
 class TokenCount(BaseModel):
@@ -82,20 +99,51 @@ class DiskCache:
 
 class LLM:
     def __init__(self, cfg: Config | None = None, client: Any = None,
-                 cache_dir: Path | None = None) -> None:
+                 cache_dir: Path | None = None, role: Role = "supporting") -> None:
         self.cfg = cfg or get_config()
+        self.role = role  # picks the API key: GEMINI_API_KEY_AGENT or GEMINI_API_KEY_SUPPORTING
         self._client = client  # a google.genai.Client, or a stand-in in tests
         self.cache = DiskCache(cache_dir or self.cfg.cache_dir / "llm")
         self.usage: dict[str, TokenCount] = {}
+        self._inflight: dict[asyncio.Future, str | None] = {}  # running API call -> its scope
+        self._stopping: set[asyncio.Future] = set()  # calls cancelled by stop(), not by a caller
+        self._stopped: set[str] = set()  # scopes that were stopped
+
+    @contextmanager
+    def scope(self, name: str) -> Iterator[None]:
+        """Tag every call made inside the block (including in tasks it starts) with `name`,
+        usually a run id, so stop(name) can cancel just those."""
+        token = _scope.set(name)
+        try:
+            yield
+        finally:
+            _scope.reset(token)
+
+    def stop(self, scope: str | None = None) -> int:
+        """Cancel the calls in flight: only those in `scope`, or every call if it is None.
+        A named scope is also marked stopped, so its later calls raise LLMCancelled at once.
+        Returns how many in-flight calls were cancelled."""
+        if scope is not None:
+            self._stopped.add(scope)
+        targets = [t for t, s in self._inflight.items() if scope is None or s == scope]
+        for task in targets:
+            self._stopping.add(task)
+            task.cancel()
+        return len(targets)
+
+    def is_stopped(self, scope: str) -> bool:
+        return scope in self._stopped
 
     @property
     def client(self) -> Any:
         if self._client is None:
-            if not self.cfg.gemini_api_key:
-                raise LLMError("GEMINI_API_KEY is not set (see .env.example)")
+            env = f"GEMINI_API_KEY_{self.role.upper()}"
+            key = getattr(self.cfg, f"gemini_api_key_{self.role}")
+            if not key:
+                raise LLMError(f"{env} is not set (see .env.example)")
             from google import genai
 
-            self._client = genai.Client(api_key=self.cfg.gemini_api_key)
+            self._client = genai.Client(api_key=key)
         return self._client
 
     def _record(self, purpose: str, tokens: TokenCount) -> None:
@@ -104,15 +152,28 @@ class LLM:
     async def _call_api(self, fn: Any, **kwargs: Any) -> Any:
         from google.genai import errors
 
+        scope = _scope.get()
         for attempt in range(MAX_API_ATTEMPTS):
+            if scope in self._stopped:
+                raise LLMCancelled(f"scope {scope!r} was stopped")
+            task = asyncio.ensure_future(fn(**kwargs))
+            self._inflight[task] = scope
             try:
-                return await fn(**kwargs)
+                return await task
+            except asyncio.CancelledError:
+                if task in self._stopping:
+                    raise LLMCancelled("the call was stopped") from None
+                task.cancel()  # the caller itself was cancelled: do not leave the request running
+                raise
             except errors.APIError as e:
                 if e.code not in RETRYABLE_STATUS or attempt == MAX_API_ATTEMPTS - 1:
                     raise LLMError(f"Gemini API error {e.code}: {e.message}") from e
                 delay = 2**attempt
                 log.warning("Gemini API error %s, retrying in %ss", e.code, delay)
                 await asyncio.sleep(delay)
+            finally:
+                self._inflight.pop(task, None)
+                self._stopping.discard(task)
         raise AssertionError("unreachable")
 
     async def generate(self, schema: type[T], prompt: str, *, model: str, purpose: str,

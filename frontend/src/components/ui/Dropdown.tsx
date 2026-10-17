@@ -11,19 +11,20 @@ interface Props {
   value: string
   options: DropdownOption[]
   onChange: (value: string) => void
+  disabled?: boolean
   'aria-label': string
 }
 
 // Self-styled select (a native <select> can't be themed): button + listbox popup that matches the
 // app's other popups. Keyboard: Enter/Space/Arrows open; Arrows/Home/End move; Enter picks;
 // Escape or Tab closes. Closes on an outside click.
-export default function Dropdown({ value, options, onChange, 'aria-label': ariaLabel }: Props) {
+export default function Dropdown({ value, options, onChange, disabled, 'aria-label': ariaLabel }: Props) {
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(0)
   const root = useRef<HTMLDivElement>(null)
   const id = useId()
   const selected = Math.max(options.findIndex((o) => o.value === value), 0)
-  const current = options[selected]
+  const current = options[selected] ?? { value: '', label: '' }
 
   useEffect(() => {
     if (!open) return
@@ -69,13 +70,14 @@ export default function Dropdown({ value, options, onChange, 'aria-label': ariaL
         type="button"
         role="combobox"
         aria-label={ariaLabel}
+        disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={`${id}-list`}
         aria-activedescendant={open ? `${id}-${active}` : undefined}
         onClick={() => (open ? setOpen(false) : openMenu())}
         onKeyDown={onKeyDown}
-        className="flex h-9.5 items-center gap-2 rounded-xl border border-line bg-elev pr-2.5 pl-3 text-base font-semibold capitalize transition-colors outline-none hover:bg-hover focus-visible:border-fg"
+        className="flex h-9.5 items-center gap-2 rounded-xl border border-line bg-elev pr-2.5 pl-3 text-base font-semibold capitalize transition-colors outline-none hover:bg-hover focus-visible:border-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-elev"
       >
         <span className="size-2.5 shrink-0 rounded-full" style={{ background: current.color ?? 'var(--color-muted)' }} />
         <span className="truncate">{current.label}</span>

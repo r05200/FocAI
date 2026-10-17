@@ -5,19 +5,32 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from pruner.api.common import SSE_RESPONSES, not_implemented
-from pruner.api.deps import get_run_store
-from pruner.core.models import Instruction, InstructionRequest, Run, RunSnapshot, StartRunRequest
+from pruner.api.deps import get_agent_llm, get_run_manager, get_run_store, get_supporting_llm
+from pruner.core.llm import LLM
+from pruner.core.models import (
+    ForkRequest,
+    Instruction,
+    InstructionRequest,
+    Run,
+    RunSnapshot,
+    StartRunRequest,
+    StopResult,
+)
+from pruner.runs.manager import RunManager
 from pruner.runs.store import RunStore
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
 Store = Annotated[RunStore, Depends(get_run_store)]
+Manager = Annotated[RunManager, Depends(get_run_manager)]
 
 
 @router.post("", status_code=202)
-async def start_run(body: StartRunRequest) -> Run:
-    """Create a run and start the agent in the background. Follow it via the events stream."""
-    not_implemented("start_run")
+async def start_run(body: StartRunRequest, manager: Manager) -> Run:
+    """Send the prompt: create the run and spin up the agent in the background. The run's
+    objectives are written from `spec` first, then the agent works on `question`. Follow it via
+    the saved events (the live stream is not built yet) or GET /runs/{id}."""
+    return await manager.start(body)
 
 
 @router.get("")
@@ -37,10 +50,51 @@ async def get_run(run_id: str, store: Store) -> RunSnapshot:
 
 
 @router.post("/{run_id}/instructions", status_code=202)
-async def add_instruction(run_id: str, body: InstructionRequest) -> Instruction:
-    """Append a steering instruction to the run's spec. The agent and scorers see it from the
-    next step on; an instruction_added event is sent on the stream."""
-    not_implemented("add_instruction")
+async def add_instruction(run_id: str, body: InstructionRequest, manager: Manager) -> Instruction:
+    """Send a further prompt to a run. It is recorded at once (instruction_added). Then, in the
+    background, it is turned into new objectives (objectives_updated) and, if any were added, the
+    amend-objectives agent re-rates the tree from the root (node_updated "scored") and requests a
+    fork wherever every branch under a node scored low (an activity line; GET /runs/{id}/forks).
+    `directives`, when given, replaces the run's directive list."""
+    try:
+        return await manager.instruct(run_id, body)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail="run not found") from e
+
+
+@router.get("/{run_id}/forks")
+async def list_forks(run_id: str, store: Store) -> list[ForkRequest]:
+    """Where the amend-objectives agent asked to restart exploration (forking is not built)."""
+    if store.snapshot(run_id) is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    return store.forks(run_id)
+
+
+@router.post("/{run_id}/stop", status_code=202)
+async def stop_run(
+    run_id: str,
+    store: Store,
+    manager: Manager,
+    agent_llm: Annotated[LLM, Depends(get_agent_llm)],
+    supporting_llm: Annotated[LLM, Depends(get_supporting_llm)],
+) -> StopResult:
+    """Stop the run now. Its LLM calls in flight (agent and supporting) are cancelled (the Gemini request is abandoned
+    and the caller gets LLMCancelled) and its later calls are refused, so the agent loop cannot
+    start another step. Then a final run_failed event ("Stopped by the user") is saved and the
+    run's status becomes "failed". 404 if the run is unknown, 409 if it already finished.
+
+    Only calls made inside `llm.scope(run_id)` are affected; other runs and vault ingestion keep
+    working."""
+    snapshot = store.snapshot(run_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    if snapshot.run.status != "running":
+        raise HTTPException(status_code=409, detail=f"run already {snapshot.run.status}")
+    # The agent and the supporting LLM are separate instances; the run may be using both.
+    cancelled = agent_llm.stop(run_id) + supporting_llm.stop(run_id)
+    await manager.cancel(run_id)  # end the run's task before the final event is numbered
+    store.mark_stopped(run_id)
+    return StopResult(run_id=run_id, cancelled_calls=cancelled)
 
 
 @router.get("/{run_id}/events", responses=SSE_RESPONSES)

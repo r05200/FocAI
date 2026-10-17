@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { ApiError, createVault } from '../../api/client'
+import { ApiError } from '../../api/client'
 import { useVaultStore } from '../../store/vaultStore'
 import { PERSON_PATTERN } from '../../types'
 import { AddVaultIcon } from '../ui/Icons'
@@ -29,7 +29,7 @@ export default function AddVault({ people }: { people: string[] }) {
 }
 
 function AddVaultDialog({ people, onClose }: { people: string[]; onClose: () => void }) {
-  const addPerson = useVaultStore((s) => s.addPerson)
+  const createVault = useVaultStore((s) => s.createVault)
   const setPerson = useVaultStore((s) => s.setPerson)
   const [name, setName] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -53,17 +53,13 @@ function AddVaultDialog({ people, onClose }: { people: string[]; onClose: () => 
 
     setSaving(true)
     try {
-      await createVault({ person: value })
+      // POST /vault/vaults (the store falls back to a local-only vault if the backend is down).
+      await createVault(value)
     } catch (err) {
       setSaving(false)
       if (err instanceof ApiError && err.status === 409) return exists()
-      // FIXME: when the backend isn't running (network error, or the dev proxy's 404/5xx), keep
-      // the vault locally so the UI still works. Remove this fallback once the backend is always up.
-      const offline = !(err instanceof ApiError) || err.status === 404 || err.status >= 500
-      if (!offline) return setError(err instanceof Error ? err.message : 'Could not create the vault.')
+      return setError(err instanceof Error ? err.message : 'Could not create the vault.')
     }
-    // TODO: once GET /api/vault/people is wired into useVaultPeople, refetch it instead of this.
-    addPerson(value)
     setPerson(value) // jump straight to the new, empty vault
     onClose()
   }

@@ -15,7 +15,11 @@ interface Props {
 
 // The people's vault: cards coloured by owner, joined by relation links.
 export default function VaultGraph({ graph, people, active }: Props) {
-  const data = useMemo(() => toMindMap(graph), [graph])
+  // Cards the user moved keep their spot when the map is rebuilt (e.g. after adding a card). Read
+  // from the store directly: moving a card must not rebuild the map and reshuffle the others.
+  const data = useMemo(() => toMindMap(graph, useVaultStore.getState().positions), [graph])
+  const moveCard = useVaultStore((s) => s.moveCard)
+  const relayout = useVaultStore((s) => s.relayout)
   const person = useVaultStore((s) => s.person)
   const selectedId = useVaultStore((s) => s.selectedId)
   const select = useVaultStore((s) => s.select)
@@ -44,6 +48,10 @@ export default function VaultGraph({ graph, people, active }: Props) {
       selectedId={selectedId}
       onSelect={select}
       nodeObject={nodeObject}
+      // PATCH /vault/items/{id}/position, once per drop (the card stays pinned where it landed).
+      onNodeMoved={(id, position) => void moveCard(id, position)}
+      // POST /vault/layout/regenerate: re-arrange the automatic layout; moved cards keep their spot.
+      onRelayout={() => relayout().catch((err) => console.warn('Could not re-arrange:', err))}
       tooltip={(n) => ({ title: n.label, subtitle: `${n.item.person} · ${n.item.kind}` })}
       linkColor={(l) => palette.relation[l.edge.relation]}
     />

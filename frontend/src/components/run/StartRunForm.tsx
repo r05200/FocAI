@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type ComponentType, type FormEvent, type KeyboardEvent, type SVGProps } from 'react'
-import { ApiError, startRun } from '../../api/client'
+import { addInstruction, isOffline, startRun } from '../../api/client'
 import { useDirectivesIn } from '../../hooks/useDirectives'
 import { useVaultPeople } from '../../hooks/useVaultGraph'
-import { useRunStore } from '../../store/runStore'
+import { selectPhase, useRunStore } from '../../store/runStore'
 import type { StartRunRequest } from '../../types'
-import { ArrowUpIcon, CloseIcon, DirectiveIcon, FileIcon, FolderIcon, ImageIcon, PlusIcon, StopIcon } from '../ui/Icons'
+import { ArrowRightIcon, CloseIcon, DirectiveIcon, FileIcon, FolderIcon, ImageIcon, PlusIcon, StopIcon } from '../ui/Icons'
 import DirectivesPicker from './DirectivesPicker'
 
 // FIXME(attachments): the attach options are a NON-FUNCTIONAL PLACEHOLDER. They're shown but
@@ -14,6 +14,12 @@ import DirectivesPicker from './DirectivesPicker'
 //   3. send the attachments with POST /api/runs (the backend doesn't accept them yet);
 //   4. folders are the unresolved part: a browser can't reveal a folder's real path, and
 //      uploading a folder is wasteful when the backend can read the disk itself.
+// Stand-in run id until the backend creates runs (each placeholder run needs its own id).
+const placeholderRunId = () => `r_pending_${Date.now()}`
+
+const QUESTION_MIN = 3
+const QUESTION_MAX = 2000
+
 const OPTIONS: { label: string; hint: string; Icon: ComponentType<SVGProps<SVGSVGElement>> }[] = [
   { label: 'File', hint: 'PDF, Word, text, Markdown…', Icon: FileIcon },
   { label: 'Image', hint: 'PNG, JPG, GIF, WebP', Icon: ImageIcon },
@@ -31,10 +37,11 @@ export default function StartRunForm() {
   const [dirVaults, setDirVaults] = useState<string[]>([])
   const [dirIds, setDirIds] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [note, setNote] = useState<string | null>(null)
   const people = useVaultPeople()
   const pool = useDirectivesIn(dirVaults)
   const chosen = pool.filter((d) => dirIds.includes(d.id))
-  const phase = useRunStore((s) => s.phase)
+  const phase = useRunStore(selectPhase)
   const begin = useRunStore((s) => s.begin)
   const stop = useRunStore((s) => s.stop)
   const busy = phase !== 'idle'
@@ -59,9 +66,16 @@ export default function StartRunForm() {
   async function onSubmit(e: FormEvent) {
     e.preventDefault()
     if (busy) return void stop()
-    if (!prompt.trim()) return
+    const question = prompt.trim()
+    if (!question) return
+    if (question.length < QUESTION_MIN) return setError('Ask a fuller question (at least 3 characters).')
+    if (question.length > QUESTION_MAX) {
+      return setError(`Keep the question under ${QUESTION_MAX.toLocaleString()} characters (it’s ${question.length.toLocaleString()}).`)
+    }
+    // A run is scored against someone's vault, so at least one has to exist.
+    if (people.length === 0) return setError('Create a vault first (Vault tab); runs are scored against it.')
     const body: StartRunRequest = {
-      question: prompt.trim(),
+      question,
       // TODO: there's no signed-in user yet; the first vault stands in for "me".
       primary_person: people[0],
       // The backend takes directive texts, not ids, and appends them to the prompts as-is.
@@ -71,29 +85,49 @@ export default function StartRunForm() {
     try {
       const run = await startRun(body)
       // TODO: open GET /api/runs/{id}/events with an AbortController and pass it to begin().
-      begin(run.id)
+      begin(run.id, question)
     } catch (err) {
-      // FIXME: start_run still returns 501, and the backend may not be running at all (network
-      // error, or the dev proxy's 5xx). Fall back to a placeholder run so the UI (Stop button
-      // etc.) can still be exercised. Remove this branch once runs are implemented.
-      const unavailable = !(err instanceof ApiError) || err.status === 404 || err.status >= 500
-      if (unavailable) begin('r_pending')
+      // Backend not running at all: fall back to a placeholder run so the UI (Stop button, the run
+      // list...) can still be exercised. Real backend errors are shown instead.
+      if (isOffline(err)) begin(placeholderRunId(), question)
       else return setError(err instanceof Error ? err.message : 'Could not start the run.')
     }
     setPrompt('')
     if (textarea.current) textarea.current.style.height = 'auto'
   }
 
+  // While a run is going, Enter sends what's typed as a further instruction to it
+  // (POST /runs/{id}/instructions) instead of starting another run. The chosen directives replace
+  // the run's directive list.
+  async function sendInstruction() {
+    const text = prompt.trim()
+    const runId = useRunStore.getState().viewingId
+    if (!text || !runId) return
+    setError(null)
+    try {
+      if (!runId.startsWith('r_pending')) await addInstruction(runId, { text, directives: chosen.map((d) => d.text) })
+    } catch (err) {
+      if (!isOffline(err)) return setError(err instanceof Error ? err.message : 'Could not send the instruction.')
+    }
+    setPrompt('')
+    setNote('Instruction sent.')
+    if (textarea.current) textarea.current.style.height = 'auto'
+    setTimeout(() => setNote(null), 2500)
+  }
+
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      // Enter sends; it never stops a run (too easy to hit by accident).
+      // Enter sends; it never stops a run (too easy to hit by accident). While a run is going it
+      // sends an instruction to that run.
       if (!busy) e.currentTarget.form?.requestSubmit()
+      else if (phase === 'running') void sendInstruction()
     }
   }
 
   function onInput(value: string) {
     setPrompt(value)
+    setError(null)
     const el = textarea.current
     if (el) {
       el.style.height = 'auto'
@@ -102,8 +136,13 @@ export default function StartRunForm() {
   }
 
   return (
+    <>
     <form onSubmit={onSubmit} className="w-full max-w-3xl">
-      <div className="rounded-[26px] border border-line bg-elev p-2 shadow-lg shadow-black/10">
+      <div
+        className={`rounded-[26px] border bg-elev p-2 shadow-lg shadow-black/10 transition-colors ${
+          error ? 'border-kind-correction' : 'border-line'
+        }`}
+      >
         {chosen.length > 0 && (
           <div className="flex px-1 pt-1 pb-2">
             <span className="inline-flex h-8 items-center gap-1.5 rounded-xl bg-hover pr-1 pl-2.5 text-[13px]">
@@ -192,7 +231,7 @@ export default function StartRunForm() {
             ref={textarea}
             rows={1}
             value={prompt}
-            placeholder="Ask a research question…"
+            placeholder={phase === 'running' ? 'Send an instruction to this run…' : 'Ask a research question…'}
             aria-label="Research question"
             onChange={(e) => onInput(e.target.value)}
             onKeyDown={onKeyDown}
@@ -206,23 +245,37 @@ export default function StartRunForm() {
             disabled={phase === 'stopping' || (!busy && !prompt.trim())}
             className="grid size-9 shrink-0 place-items-center rounded-full bg-accent text-accent-fg disabled:opacity-30"
           >
-            {busy ? <StopIcon /> : <ArrowUpIcon />}
+            {busy ? <StopIcon /> : <ArrowRightIcon />}
           </button>
         </div>
       </div>
-      {error && <p role="alert" className="mt-2 px-4 text-xs text-kind-correction">{error}</p>}
-      {pickerOpen && (
-        <DirectivesPicker
-          vaults={dirVaults}
-          selected={dirIds}
-          onClose={() => setPickerOpen(false)}
-          onApply={(vaults, ids) => {
-            setDirVaults(vaults)
-            setDirIds(ids)
-            setPickerOpen(false)
-          }}
-        />
+      {note && !error && <p className="mt-2 px-4 text-xs text-muted">{note}</p>}
+      {(error || prompt.length >= QUESTION_MAX * 0.9) && (
+        <div className="mt-2 flex items-start justify-between gap-3 px-4 text-xs">
+          <p role="alert" className="text-kind-correction">{error}</p>
+          {/* Counter appears near the limit, red once over it. */}
+          {prompt.length >= QUESTION_MAX * 0.9 && (
+            <span className={`ml-auto shrink-0 ${prompt.length > QUESTION_MAX ? 'text-kind-correction' : 'text-muted'}`}>
+              {prompt.length.toLocaleString()} / {QUESTION_MAX.toLocaleString()}
+            </span>
+          )}
+        </div>
       )}
     </form>
+    {/* Outside the <form> on purpose: a dialog is still a DOM child of it, so pressing Enter on one
+        of the picker's checkboxes would "implicitly submit" the prompt (starting or stopping a run). */}
+    {pickerOpen && (
+      <DirectivesPicker
+        vaults={dirVaults}
+        selected={dirIds}
+        onClose={() => setPickerOpen(false)}
+        onApply={(vaults, ids) => {
+          setDirVaults(vaults)
+          setDirIds(ids)
+          setPickerOpen(false)
+        }}
+      />
+    )}
+    </>
   )
 }

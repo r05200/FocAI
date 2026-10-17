@@ -1,28 +1,31 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import ForceGraph3D, { type ForceGraphMethods, type LinkObject, type NodeObject } from 'react-force-graph-3d'
-import { MOUSE, type Object3D, type PerspectiveCamera } from 'three'
+import { MOUSE, Plane, Raycaster, Vector2, Vector3, type Object3D, type PerspectiveCamera } from 'three'
 import type { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import { isTyping, useSpacePan } from '../../hooks/useSpacePan'
 import { EASE_OUT, flyCamera, type Flight, type Vec3 } from '../../lib/cameraFly'
 import { CARD_H, CARD_W } from '../../lib/vaultSprites'
 import { SIDEBAR_RAIL } from '../../store/uiStore'
 import { useVaultStore, type VaultTool } from '../../store/vaultStore'
-import { CursorIcon, FitIcon, HandIcon, MinusIcon, PlusIcon, TargetIcon } from '../ui/Icons'
+import { CursorIcon, FitIcon, HandIcon, LayoutIcon, MinusIcon, MoveIcon, PlusIcon, ResetViewIcon, TargetIcon } from '../ui/Icons'
 
 const FOCUS_DIST = 900 // camera distance when focused on the central node (shows its neighbourhood)
 const FLY_FROM = 2600 // how far out the fly-in starts
 const FLATTEN = 0.06 // pull toward z=0: head-on it reads like a 2D map, rotating reveals depth
 
-type Control = 'in' | 'out' | 'center' | 'fit'
+type Control = 'in' | 'out' | 'center' | 'reset' | 'fit'
 const CONTROLS = [
   { action: 'in', label: 'Zoom in', Icon: PlusIcon },
   { action: 'out', label: 'Zoom out', Icon: MinusIcon },
   { action: 'center', label: 'Recenter', Icon: TargetIcon },
+  { action: 'reset', label: 'Reset orientation', Icon: ResetViewIcon },
   { action: 'fit', label: 'Fit everything', Icon: FitIcon },
 ] as const satisfies readonly { action: Control; label: string; Icon: unknown }[]
 
 const TOOLS = [
   { tool: 'select', label: 'Select & rotate', key: 'V', Icon: CursorIcon },
   { tool: 'pan', label: 'Pan (hold Space)', key: 'H', Icon: HandIcon },
+  { tool: 'move', label: 'Move cards', key: 'M', Icon: MoveIcon },
 ] as const satisfies readonly { tool: VaultTool; label: string; key: string; Icon: unknown }[]
 
 // Custom d3 force: damps z so the layout stays mostly flat but keeps some real depth.
@@ -35,13 +38,6 @@ function flattenZ(strength: number) {
     nodes = ns
   }
   return force
-}
-
-function isTyping(target: EventTarget | null) {
-  return (
-    target instanceof HTMLElement &&
-    (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))
-  )
 }
 
 // Full title on hover, following the pointer. Kept separate so mouse moves don't re-render the graph.
@@ -100,6 +96,11 @@ export interface MindMapProps<N extends MindMapNode, L extends object> {
   openWith?: 'focus' | 'fit'
   // Changing this re-runs the fly-in (e.g. pass the selected person).
   resetKey?: string
+  // Show the Move tool: drag a card to reposition it. Called once, when the drop happens, with the
+  // card's new coordinates (it stays pinned there). Omit both to make the map read-only.
+  onNodeMoved?: (id: string, position: { x: number; y: number; z: number }) => void
+  // Adds a "Re-arrange" button that asks for a fresh automatic layout (the graph then updates).
+  onRelayout?: () => void | Promise<void>
   // Extra d3 forces / tuning, e.g. grouping. Applied before the first layout, and again (with a
   // re-layout) if it changes. Keep it memoized.
   configureForces?: (g: ForceGraphMethods<NodeObject<N>, LinkObject<N, L>>) => void
@@ -116,14 +117,19 @@ export default function MindMap3D<N extends MindMapNode, L extends object>({
   linkColor,
   openWith = 'focus',
   resetKey,
+  onNodeMoved,
+  onRelayout,
   configureForces,
 }: MindMapProps<N, L>) {
   type Node = NodeObject<N>
   const tool = useVaultStore((s) => s.tool)
   const setTool = useVaultStore((s) => s.setTool)
-  const [spaceHeld, setSpaceHeld] = useState(false)
   const [hovered, setHovered] = useState<Node | null>(null)
+  const movable = !!onNodeMoved
+  const spaceHeld = useSpacePan(active)
   const panning = tool === 'pan' || spaceHeld
+  // A map without Move shouldn't be stuck on it because another map (or an earlier visit) chose it.
+  const moving = movable && tool === 'move' && !panning
 
   const fg = useRef<ForceGraphMethods<Node, LinkObject<N, L>> | undefined>(undefined)
   const box = useRef<HTMLDivElement>(null)
@@ -218,13 +224,21 @@ export default function MindMap3D<N extends MindMapNode, L extends object>({
     return { x: d.x / len, y: d.y / len, z: d.z / len }
   }
 
+  // The camera as it is when the tab first opens: straight on (looking along -z, so the map reads
+  // as flat), framed on the focus card or on everything, depending on `openWith`.
+  function homePose(): { pos: Vec3; look: Vec3 } | null {
+    const look = focusPoint()
+    if (!look) return null
+    const fit = openWith === 'fit' ? fitPose({ x: 0, y: 0, z: 1 }) : null
+    return fit ?? { pos: { ...look, z: look.z + FOCUS_DIST }, look }
+  }
+
   function focusCentral(ms: number, intro = false) {
     const look = focusPoint()
     if (!look) return
     if (intro) {
       // Start far out, straight on, then glide in.
-      const to = openWith === 'fit' ? fitPose({ x: 0, y: 0, z: 1 }) : null
-      const end = to ?? { pos: { ...look, z: look.z + FOCUS_DIST }, look }
+      const end = homePose()!
       const from = { pos: { ...end.look, z: end.look.z + FLY_FROM }, look: end.look }
       fg.current?.cameraPosition(from.pos, from.look, 0)
       return fly(end, ms, from, EASE_OUT)
@@ -289,36 +303,126 @@ export default function MindMap3D<N extends MindMapNode, L extends object>({
     }
   }, [panning, ready])
 
-  // Space = temporary pan; V / H switch tools. Only while the vault is on screen.
+  // 3d-force-graph declares `enableNodeDrag` with triggerUpdate: false, so its card-drag handling
+  // is only built or torn down on the next graph update. Force one when the Move tool toggles.
+  useEffect(() => {
+    fg.current?.refresh()
+  }, [moving])
+
+  // After a card is dropped, 3d-force-graph fires a synthetic touch "pointerup" at the document to
+  // reset the camera controls. With OrbitControls in this three.js version that crashes ("reading
+  // 'x'"), and it isn't needed: the real pointerup right after already resets them. Swallow just
+  // that one event, flagged by onNodeDragEnd.
+  const dropping = useRef(false)
+
+  // ---- Move tool: a card moves on its own, flat in the map's plane.
+  // The library drags in a camera-facing plane and keeps the simulation warm while dragging, so
+  // links tug neighbours along and the centre force re-centres the whole map (it looks like the
+  // camera drifting). Instead: every other card is frozen for the drag and until the layout comes
+  // to rest, and the dragged card is re-placed on each move where the pointer ray meets the plane
+  // parallel to the map (z = the card's depth when grabbed).
+  const hoveredRef = useRef<Node | null>(null)
+  const pointer = useRef({ x: 0, y: 0 })
+  const drag = useRef<{ z: number; offset: { x: number; y: number } } | null>(null)
+  const frozen = useRef<Node[]>([]) // cards pinned only for the duration of a drag
+
+  // Where the pointer ray hits the plane z = `z`, in graph coordinates (null if edge-on).
+  function pointOnPlane(clientX: number, clientY: number, z: number) {
+    const g = fg.current
+    if (!g) return null
+    const rect = g.renderer().domElement.getBoundingClientRect()
+    const ndc = new Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1)
+    const ray = new Raycaster()
+    ray.setFromCamera(ndc, g.camera())
+    return ray.ray.intersectPlane(new Plane(new Vector3(0, 0, 1), -z), new Vector3())
+  }
+
+  useEffect(() => {
+    const el = box.current
+    if (!el) return
+    const onMove = (e: PointerEvent) => {
+      pointer.current = { x: e.clientX, y: e.clientY }
+    }
+    // Capture phase, so it runs before the graph's own handlers start a drag.
+    const onDown = (e: PointerEvent) => {
+      pointer.current = { x: e.clientX, y: e.clientY }
+      const n = hoveredRef.current
+      if (!moving || !n || e.button !== 0) return void (drag.current = null)
+      const z = n.z ?? 0
+      const hit = pointOnPlane(e.clientX, e.clientY, z)
+      drag.current = { z, offset: hit ? { x: (n.x ?? 0) - hit.x, y: (n.y ?? 0) - hit.y } : { x: 0, y: 0 } }
+    }
+    el.addEventListener('pointermove', onMove, { capture: true })
+    el.addEventListener('pointerdown', onDown, { capture: true })
+    return () => {
+      el.removeEventListener('pointermove', onMove, { capture: true })
+      el.removeEventListener('pointerdown', onDown, { capture: true })
+    }
+  }, [moving])
+
+  function onCardDrag(n: Node) {
+    setHovered(null)
+    const d = drag.current
+    if (!d) return
+    if (frozen.current.length === 0) {
+      // First move of this drag: freeze every card that isn't already pinned.
+      for (const other of data.nodes as Node[]) {
+        if (other === n || other.fx !== undefined) continue
+        Object.assign(other, { fx: other.x, fy: other.y, fz: other.z })
+        frozen.current.push(other)
+      }
+    }
+    const hit = pointOnPlane(pointer.current.x, pointer.current.y, d.z)
+    if (!hit) return // looking at the map edge-on: hold the card where it is
+    const p = { x: hit.x + d.offset.x, y: hit.y + d.offset.y, z: d.z }
+    Object.assign(n, { x: p.x, y: p.y, z: p.z, fx: p.x, fy: p.y, fz: p.z })
+    ;(n as Node & { __threeObj?: Object3D }).__threeObj?.position.set(p.x, p.y, p.z)
+  }
+
+  // Once the layout is at rest again, let the cards frozen for a drag go back to the layout.
+  // (With the simulation stopped, un-pinning them doesn't move anything.)
+  function onEngineStop() {
+    if (drag.current) return
+    for (const n of frozen.current) {
+      delete n.fx
+      delete n.fy
+      delete n.fz
+    }
+    frozen.current = []
+  }
+  useEffect(() => {
+    const swallow = (e: PointerEvent) => {
+      if (dropping.current && !e.isTrusted && e.pointerType === 'touch') {
+        dropping.current = false
+        e.stopImmediatePropagation()
+      }
+    }
+    document.addEventListener('pointerup', swallow, { capture: true })
+    return () => document.removeEventListener('pointerup', swallow, { capture: true })
+  }, [])
+
+  // V / H / M switch tools, only while the vault is on screen. (Space = temporary pan: useSpacePan.)
   useEffect(() => {
     if (!active) return
     function onKeyDown(e: KeyboardEvent) {
       if (isTyping(e.target) || e.metaKey || e.ctrlKey || e.altKey) return
-      if (e.code === 'Space') {
-        e.preventDefault()
-        setSpaceHeld(true)
-      } else if (e.key === 'v' || e.key === 'V') setTool('select')
+      if (e.key === 'v' || e.key === 'V') setTool('select')
       else if (e.key === 'h' || e.key === 'H') setTool('pan')
+      else if ((e.key === 'm' || e.key === 'M') && movable) setTool('move')
     }
-    function onKeyUp(e: KeyboardEvent) {
-      if (e.code === 'Space') setSpaceHeld(false)
-    }
-    const release = () => setSpaceHeld(false)
     window.addEventListener('keydown', onKeyDown)
-    window.addEventListener('keyup', onKeyUp)
-    window.addEventListener('blur', release)
-    return () => {
-      window.removeEventListener('keydown', onKeyDown)
-      window.removeEventListener('keyup', onKeyUp)
-      window.removeEventListener('blur', release)
-      release()
-    }
-  }, [active, setTool])
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [active, setTool, movable])
 
   function onControl(action: Control) {
     if (!fg.current) return
     if (action === 'fit') return fitAll(900)
     if (action === 'center') return focusCentral(900)
+    if (action === 'reset') {
+      // Back to the original view: same angle and framing as when the tab opened.
+      const home = homePose()
+      return home ? fly(home, 1100) : undefined
+    }
     const { pos, look } = cameraState()
     // Zoom toward the point being looked at; chained clicks continue from the current spot.
     const k = action === 'in' ? 0.7 : 1 / 0.7
@@ -346,7 +450,7 @@ export default function MindMap3D<N extends MindMapNode, L extends object>({
             controlType="orbit"
             backgroundColor="rgba(0,0,0,0)"
             showNavInfo={false}
-            enableNodeDrag={false}
+            enableNodeDrag={moving}
             showPointerCursor={!panning}
             warmupTicks={300}
             cooldownTicks={100}
@@ -357,7 +461,22 @@ export default function MindMap3D<N extends MindMapNode, L extends object>({
             linkWidth={0.8}
             linkOpacity={0.9}
             linkCurvature={0.25}
-            onNodeHover={(n) => setHovered(panning || !active ? null : n)}
+            onNodeDrag={onCardDrag}
+            onNodeDragEnd={(n) => {
+              // The library lets go of a dragged card when dropped; pin it where it landed so the
+              // layout leaves it alone, then report the spot.
+              const { x = 0, y = 0, z = 0 } = n
+              Object.assign(n, { fx: x, fy: y, fz: z })
+              drag.current = null
+              onNodeMoved?.(n.id as string, { x, y, z })
+              dropping.current = true // see the swallow effect above
+              setTimeout(() => (dropping.current = false), 0)
+            }}
+            onEngineStop={onEngineStop}
+            onNodeHover={(n) => {
+              hoveredRef.current = n
+              setHovered(panning || !active ? null : n)
+            }}
             onNodeClick={(n) => !panning && onSelect(n.id as string)}
             onBackgroundClick={() => !panning && onSelect(null)}
           />
@@ -371,8 +490,8 @@ export default function MindMap3D<N extends MindMapNode, L extends object>({
         aria-label="Vault tools"
         className="absolute top-4 left-1/2 flex -translate-x-1/2 gap-1 rounded-xl border border-line bg-elev p-1 shadow-lg shadow-black/20"
       >
-        {TOOLS.map(({ tool: t, label, key, Icon }) => {
-          const on = t === 'pan' ? panning : !panning
+        {TOOLS.filter((t) => t.tool !== 'move' || movable).map(({ tool: t, label, key, Icon }) => {
+          const on = t === 'pan' ? panning : t === 'move' ? moving : !panning && !moving
           return (
             <button
               key={t}
@@ -391,6 +510,16 @@ export default function MindMap3D<N extends MindMapNode, L extends object>({
       </div>
 
       <div className="absolute right-5 bottom-4 flex gap-1.5">
+        {onRelayout && (
+          <button
+            aria-label="Re-arrange cards"
+            title="Re-arrange cards (cards you moved stay put)"
+            onClick={() => void onRelayout()}
+            className="grid size-9 place-items-center rounded-full border border-line bg-elev transition-colors hover:bg-hover"
+          >
+            <LayoutIcon />
+          </button>
+        )}
         {CONTROLS.map(({ action, label, Icon }) => (
           <button
             key={action}

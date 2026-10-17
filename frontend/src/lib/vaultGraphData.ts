@@ -1,11 +1,19 @@
 // Turns the backend VaultGraph into force-graph data: one node per vault item and one link per
 // relation edge (contradicts / supports / ...). People aren't nodes; they're shown by colour.
-import type { VaultEdge, VaultGraph, VaultItemView } from '../types'
+import type { Position, VaultEdge, VaultGraph, VaultItemView } from '../types'
 
 export interface MapNode {
   id: string
   label: string
   item: VaultItemView
+  // Where the card starts. Cards moved by hand (fx/fy/fz set) are pinned there and the layout
+  // never moves them; cards that were never moved start at the backend's auto position.
+  x?: number
+  y?: number
+  z?: number
+  fx?: number
+  fy?: number
+  fz?: number
 }
 
 export interface MapLink {
@@ -18,10 +26,22 @@ export function displayTitle(title: string) {
   return title.replace(/^\[fixture\]\s*/, '')
 }
 
-export function toMindMap(graph: VaultGraph): { nodes: MapNode[]; links: MapLink[] } {
+// `moved` holds positions dragged in this session; they win over the backend's item.position.
+export function toMindMap(
+  graph: VaultGraph,
+  moved: Record<string, Position> = {},
+): { nodes: MapNode[]; links: MapLink[] } {
   const ids = new Set(graph.nodes.map((n) => n.id))
   return {
-    nodes: graph.nodes.map((item) => ({ id: item.id, label: displayTitle(item.title), item })),
+    nodes: graph.nodes.map((item) => {
+      const node: MapNode = { id: item.id, label: displayTitle(item.title), item }
+      // A position (moved this session, or saved by the backend) pins the card. Otherwise the
+      // backend's automatic layout, if it has one, is only where the card starts.
+      const pinned = moved[item.id] ?? item.position
+      if (pinned) Object.assign(node, { ...pinned, fx: pinned.x, fy: pinned.y, fz: pinned.z })
+      else if (item.auto_position) Object.assign(node, item.auto_position)
+      return node
+    }),
     links: graph.edges
       .filter((e) => ids.has(e.source) && ids.has(e.target))
       .map((edge) => ({ source: edge.source, target: edge.target, edge })),

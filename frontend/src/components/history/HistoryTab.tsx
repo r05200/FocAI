@@ -1,4 +1,6 @@
 import { useRunHistory } from '../../hooks/useRunHistory'
+import { useRunStore } from '../../store/runStore'
+import { useUiStore } from '../../store/uiStore'
 import { HistoryIcon } from '../ui/Icons'
 
 function formatDate(seconds: number) {
@@ -10,21 +12,28 @@ function formatDate(seconds: number) {
   })
 }
 
+// The backend's RunMode values are "pruned" / "unpruned"; the UI calls pruning "parking".
+const MODE_LABEL = { pruned: 'parked', unpruned: 'unparked' } as const
+
 const STATUS_STYLE = {
   running: 'text-kind-note',
   done: 'text-rel-supports',
   failed: 'text-kind-correction',
 } as const
 
-export default function HistoryTab() {
-  const runs = useRunHistory()
+export default function HistoryTab({ active }: { active: boolean }) {
+  // Refetched each time the tab is opened (GET /runs), so new and finished runs show up.
+  const { runs, loading, offline } = useRunHistory(active)
+  const openRun = useRunStore((s) => s.openRun)
+  const setTab = useUiStore((s) => s.setTab)
 
   return (
     <div className="h-full overflow-auto">
       <div className="mx-auto w-full max-w-3xl px-4 py-8">
         <h1 className="mb-1 text-2xl font-semibold">Run history</h1>
         <p className="mb-6 text-sm text-muted">
-          {runs.length} run{runs.length === 1 ? '' : 's'}
+          {loading ? 'Loading…' : `${runs.length} run${runs.length === 1 ? '' : 's'}`}
+          {offline && <span className="text-kind-note"> · backend unreachable, showing a sample</span>}
         </p>
 
         {runs.length === 0 ? (
@@ -38,14 +47,19 @@ export default function HistoryTab() {
           <ul className="space-y-3">
             {runs.map((run) => (
               <li key={run.id}>
-                {/* TODO: open the run's tree view on click. */}
-                <button className="w-full rounded-2xl border border-line bg-elev px-5 py-4 text-left transition-colors hover:bg-hover">
+                {/* Opens the run on the Research tab (its tree is still just a root for now). */}
+                <button
+                  onClick={() => {
+                    openRun(run)
+                    setTab('run')
+                  }}
+                  className="w-full rounded-2xl border border-line bg-elev px-5 py-4 text-left transition-colors hover:bg-hover">
                   <p className="leading-relaxed">{run.question}</p>
                   <p className="mt-2.5 flex flex-wrap items-center gap-x-2 text-xs text-muted">
                     <span className={`font-medium capitalize ${STATUS_STYLE[run.status]}`}>
                       {run.status}
                     </span>
-                    · <span>{run.mode}</span> ·{' '}
+                    · <span>{MODE_LABEL[run.mode]}</span> ·{' '}
                     <span className="capitalize">{run.primary_person}</span> ·{' '}
                     <span>{formatDate(run.created_at)}</span>
                   </p>

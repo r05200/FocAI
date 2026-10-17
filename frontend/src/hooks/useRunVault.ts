@@ -11,6 +11,7 @@ export interface RunIdea {
 
 // Hard-coded placeholder until runs and branches exist. To go live, derive these from the run's
 // tree nodes (RunSnapshot.nodes): one idea per node, `branch` = the path from the root.
+// FLAG (ignore unless asked): hard-coded ideas; no run tree is derived yet.
 const PLACEHOLDER: RunIdea[] = [
   { id: 'i1', branch: 'Quantization', title: '4-bit KV cache with per-channel scales', summary: 'Per-channel scaling keeps outliers from dominating the quantization error.' },
   { id: 'i2', branch: 'Quantization', title: 'Mixed precision: keep recent tokens in fp16', summary: 'Recent tokens matter most for recall; older ones tolerate lower precision.' },

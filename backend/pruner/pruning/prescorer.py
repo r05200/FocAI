@@ -187,6 +187,33 @@ class PreScorer:
             out.append(Rescored(node.id, node.status, result, change))
         return out
 
+    async def rate_for_amendment(self, nodes: Sequence[Node], *, question: str,
+                                 objectives: list[Objective], people: Sequence[str],
+                                 instructions: Sequence[Instruction] = (),
+                                 directives: Sequence[Directive | str] = ()) -> list[PreScored]:
+        """Re-rate sibling branches (any status, including ones that already ran) against
+        amended objectives, in one call. The prompt is loose on purpose. A result in the "park"
+        zone here means "low": overall under cfg.backtrack_below. Nothing is written to nodes."""
+        if not nodes:
+            return []
+        hits = await self._search(nodes, people)
+        blocks = []
+        for node, node_hits in zip(nodes, hits, strict=True):
+            lines = [f"Candidate {node.id} ({node.type}, {node.status}): {node.description}"]
+            if node.result:
+                lines.append(f"What it found: {one_line(node.result)[:300]}")
+            blocks.append("\n".join([*lines, *self._vault_lines(people, node_hits)]))
+        prompt = prompts.render(
+            "amend_rate",
+            question=question,
+            instructions=prompts.render_instructions(instructions, directives),
+            objectives=prompts.render_objectives(objectives),
+            candidates="\n\n".join(blocks),
+        )
+        gen = await self.llm.generate(PreScoreBatch, prompt, model=self.cfg.fast_model,
+                                      purpose="scorer")
+        return self._results(nodes, hits, gen, park_below=self.cfg.backtrack_below)
+
     # ---- shared pieces
 
     async def _search(self, nodes: Sequence[Node], people: Sequence[str]) -> list[list]:

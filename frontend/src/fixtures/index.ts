@@ -8,6 +8,7 @@ import runSnapshot from './run_snapshot.json'
 import vaultGraph from './vault_graph.json'
 import vaultItems from './vault_items.json'
 
+// FLAG (ignore unless asked): the `as unknown as` casts hide shape drift, so tsc will not catch a mismatch with the backend.
 export const fixtureEvents = runEvents as unknown as PrunerEvent[]
 export const fixtureSnapshot = runSnapshot as unknown as RunSnapshot
 export const fixtureVaultGraph = vaultGraph as unknown as VaultGraph

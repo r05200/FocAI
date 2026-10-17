@@ -23,7 +23,13 @@ function Tab({ id }: { id: TabId }) {
       role="tab"
       aria-selected={active}
       aria-label={label}
-      onClick={() => setTab(id)}
+      onClick={(e) => {
+        setTab(id)
+        // A mouse click leaves focus on this button, and the next key press (e.g. a map shortcut
+        // like M or Space) makes that focus "visible", which pops the sidebar open and shifts
+        // the page. Let go of focus after mouse clicks; keyboard activation (detail 0) keeps it.
+        if (e.detail > 0) e.currentTarget.blur()
+      }}
       className={`flex h-11 w-full items-center gap-3 overflow-hidden rounded-xl px-3.5 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-accent ${
         active ? 'bg-elev text-fg' : 'text-muted hover:bg-hover hover:text-fg'
       }`}

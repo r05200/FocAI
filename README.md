@@ -24,7 +24,7 @@ data/       Vaults and replays (committed); LLM cache and run state (git-ignored
 ## Setup
 
 ```sh
-cp .env.example .env            # add GEMINI_API_KEY
+cp .env.example .env            # add GEMINI_API_KEY_SUPPORTING (and _AGENT)
 cd backend && uv sync
 cd ../frontend && npm install
 ```
@@ -39,7 +39,7 @@ cd frontend && npm run dev
 All routes under `/api` are declared with their request and response models. Live so far:
 `/api/health` and the `/api/vault/*` routes; the rest return `501` until built.
 
-Try an ingest (needs `GEMINI_API_KEY` in `.env`):
+Try an ingest (needs `GEMINI_API_KEY_SUPPORTING` in `.env`):
 
 ```sh
 curl -s localhost:8000/api/vault/items -H 'content-type: application/json' \

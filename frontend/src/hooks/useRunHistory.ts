@@ -1,29 +1,30 @@
+import { useEffect, useState } from 'react'
 import { fixtureSnapshot } from '../fixtures'
+import { isOffline, listRuns } from '../api/client'
 import type { Run } from '../types'
 
-// Hard-coded until wired up. To go live: `GET /api/runs` (list[Run]; not implemented in the
-// backend yet) and return it here, newest first.
-const EARLIER: Pick<Run, 'id' | 'question' | 'status' | 'mode' | 'primary_person' | 'created_at'>[] = [
-  {
-    id: 'r_prev2',
-    question: 'Does 4-bit KV-cache quantization hurt long-context recall past 32k tokens?',
-    status: 'done',
-    mode: 'pruned',
-    primary_person: 'alice',
-    created_at: 1759913600,
-  },
-  {
-    id: 'r_prev1',
-    question: 'How do users perceive latency in agent interfaces compared with raw throughput?',
-    status: 'failed',
-    mode: 'unpruned',
-    primary_person: 'bob',
-    created_at: 1759827200,
-  },
-]
+export interface RunHistory {
+  runs: Run[]
+  loading: boolean
+  offline: boolean
+}
 
-export type RunHistoryItem = (typeof EARLIER)[number]
-
-export function useRunHistory(): RunHistoryItem[] {
-  return [fixtureSnapshot.run, ...EARLIER].sort((a, b) => b.created_at - a.created_at)
+// Every saved run, newest first (GET /api/runs); sample runs while the backend is unreachable.
+// Refetched whenever `refreshKey` changes (e.g. when the History tab is opened).
+export function useRunHistory(refreshKey: unknown): RunHistory {
+  const [state, setState] = useState<RunHistory>({ runs: [], loading: true, offline: false })
+  useEffect(() => {
+    let cancelled = false
+    listRuns()
+      .then((runs) => !cancelled && setState({ runs, loading: false, offline: false }))
+      .catch((err) => {
+        if (cancelled) return
+        if (!isOffline(err)) console.warn('Could not load run history:', err)
+        setState({ runs: isOffline(err) ? [fixtureSnapshot.run] : [], loading: false, offline: isOffline(err) })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [refreshKey])
+  return state
 }

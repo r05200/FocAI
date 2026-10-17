@@ -56,6 +56,14 @@ export function FolderIcon(props: SVGProps<SVGSVGElement>) {
   )
 }
 
+export function ArrowRightIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg strokeWidth={2.2} {...props}>
+      <path d="M5 12h14M12 5l7 7-7 7" />
+    </Svg>
+  )
+}
+
 export function ArrowUpIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <Svg strokeWidth={2.2} {...props}>
@@ -202,6 +210,44 @@ export function AddVaultIcon(props: SVGProps<SVGSVGElement>) {
       <circle cx="5" cy="18" r="1.7" />
       <path d="M8.6 9.4 5.6 6.5M11.5 9.6l2.4-3M8.7 12.7l-2.7 3.9" />
       <path d="M18 14v6M15 17h6" />
+    </Svg>
+  )
+}
+
+export function MoveIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg width={16} height={16} {...props}>
+      <path d="M12 3v18M3 12h18M12 3 9 6M12 3l3 3M12 21l-3-3M12 21l3-3M3 12l3-3M3 12l3 3M21 12l-3-3M21 12l-3 3" />
+    </Svg>
+  )
+}
+
+// Rotating arrow around a small cube-ish square: "put the view back the way it was".
+export function ResetViewIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg width={16} height={16} {...props}>
+      <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+      <path d="M3 3v5h5" />
+      <rect x="9" y="9" width="6" height="6" rx="1" />
+    </Svg>
+  )
+}
+
+export function ArrowLeftIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg width={16} height={16} strokeWidth={2.2} {...props}>
+      <path d="M19 12H5M12 19l-7-7 7-7" />
+    </Svg>
+  )
+}
+
+export function LayoutIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg width={16} height={16} {...props}>
+      <rect x="3" y="3" width="7" height="7" rx="1" />
+      <rect x="14" y="3" width="7" height="7" rx="1" />
+      <rect x="3" y="14" width="7" height="7" rx="1" />
+      <path d="M14 17.5h7M17.5 14v7" />
     </Svg>
   )
 }

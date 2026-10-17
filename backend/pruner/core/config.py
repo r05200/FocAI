@@ -10,7 +10,7 @@ new users (404), and the Pro models had no quota on this key (429), so "strong" 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
@@ -36,7 +36,10 @@ def _env_float(name: str, default: float) -> float:
 @dataclass(frozen=True)
 class Config:
     # --- LLM (provider-swappable; only llm.py reads these) ---
-    gemini_api_key: str
+    # Two keys, so the agent and the supporting calls (vault, scorers, objectives) have separate
+    # quotas. Hidden from repr so a printed Config never shows them.
+    gemini_api_key_agent: str = field(repr=False)
+    gemini_api_key_supporting: str = field(repr=False)
     fast_model: str  # scoring and ingestion
     strong_model: str  # planning and synthesis
     embedding_model: str
@@ -55,6 +58,9 @@ class Config:
     run_score_min: float  # at or above this a candidate runs; between the two is borderline
     post_score_min: float  # results scoring below this (and advancing no objective) are parked
     rescore_park_below: float  # after an amended question, only scores below this stay parked
+    # Amend agent: a branch counts as "low" below this. It backtracks to a node only when every
+    # live branch under it is low, so keep it loose (low) to avoid redoing progress.
+    backtrack_below: float
 
     # --- Vault ---
     similarity_threshold: float  # below this, vault search returns nothing
@@ -80,7 +86,8 @@ class Config:
 def get_config() -> Config:
     data_dir = Path(_env("DATA_DIR", str(REPO_ROOT / "data")))
     return Config(
-        gemini_api_key=os.environ.get("GEMINI_API_KEY", ""),
+        gemini_api_key_agent=os.environ.get("GEMINI_API_KEY_AGENT", ""),
+        gemini_api_key_supporting=os.environ.get("GEMINI_API_KEY_SUPPORTING", ""),
         fast_model=_env("FAST_MODEL", "gemini-3.5-flash-lite"),
         strong_model=_env("STRONG_MODEL", "gemini-3.5-flash"),
         embedding_model=_env("EMBEDDING_MODEL", "gemini-embedding-001"),
@@ -94,6 +101,7 @@ def get_config() -> Config:
         run_score_min=_env_float("RUN_SCORE_MIN", 6.0),
         post_score_min=_env_float("POST_SCORE_MIN", 4.0),
         rescore_park_below=_env_float("RESCORE_PARK_BELOW", 4.0),
+        backtrack_below=_env_float("BACKTRACK_BELOW", 3.0),
         similarity_threshold=_env_float("SIMILARITY_THRESHOLD", 0.6),
         search_top_k=_env_int("SEARCH_TOP_K", 5),
         neighbors_per_item=_env_int("NEIGHBORS_PER_ITEM", 3),

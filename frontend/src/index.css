@@ -111,3 +111,21 @@
     cursor: pointer;
   }
 }
+
+/* Run tab: the root node pops in once the prompt bar has finished moving to the top. */
+@keyframes node-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* React Flow paints its own backdrop; let the app background show through instead. */
+.react-flow {
+  --xy-background-color: transparent;
+  --xy-background-color-default: transparent;
+}

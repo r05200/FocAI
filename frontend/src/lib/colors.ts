@@ -16,6 +16,7 @@ export const RELATION_COLOR = Object.fromEntries(
 // Team members get a colour slot by their index in the sorted people list (wraps after 16).
 export const PERSON_SLOTS = 16
 
+// FLAG (ignore unless asked): colours wrap after 16 people; the run vault reuses this for branches, so a 17th repeats a colour.
 export function personColor(people: string[], person: string): string {
   return `var(--color-person-${Math.max(people.indexOf(person), 0) % PERSON_SLOTS})`
 }

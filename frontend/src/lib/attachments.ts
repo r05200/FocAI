@@ -23,6 +23,7 @@ export const LIMITS = {
   maxAttachments: 10,
 }
 
+// FLAG (ignore unless asked): accepts PDF/Word/etc., but backend ingest takes text only (PRD: no PDF parsing).
 export const DOC_EXTENSIONS = ['pdf', 'txt', 'md', 'markdown', 'doc', 'docx', 'csv', 'json', 'tex', 'html', 'rtf']
 export const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg']
 

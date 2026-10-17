@@ -1,7 +1,9 @@
 import { useRef, useState, type FormEvent } from 'react'
+import { useDirectivesIn } from '../../hooks/useDirectives'
+import { useVaultGraph } from '../../hooks/useVaultGraph'
+import { ACCEPT, checkPicked } from '../../lib/attachments'
 import { KIND_COLOR } from '../../lib/colors'
 import { useVaultStore, type AddableKind } from '../../store/vaultStore'
-import type { VaultItemView } from '../../types'
 import { CloseIcon, FolderIcon, PlusIcon } from '../ui/Icons'
 import Modal from '../ui/Modal'
 
@@ -18,6 +20,16 @@ const TEXT_PLACEHOLDER: Record<Exclude<AddableKind, 'paper'>, string> = {
   question: 'What do you want to find out?',
   directive: 'e.g. Prefer optimizer changes over architecture changes.',
 }
+
+// Longest text each kind accepts. Directives are short, standing instructions that get pasted
+// into every prompt, so they're kept tight.
+const TEXT_LIMIT: Record<Exclude<AddableKind, 'paper'>, number> = {
+  note: 5000,
+  question: 1000,
+  directive: 500,
+}
+const LINK_LIMIT = 2000
+const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
 
 interface Errors {
   text?: string
@@ -48,10 +60,6 @@ function ErrorText({ children }: { children?: string }) {
   ) : null
 }
 
-function truncate(s: string, n: number) {
-  return s.length > n ? `${s.slice(0, n - 1)}…` : s
-}
-
 // "+" button plus the dialog it opens. `author` is whose vault the new entry goes into; without
 // one (no vaults exist yet) there is nowhere to add to, so the button is disabled.
 export default function AddKnowledge({ author }: { author?: string }) {
@@ -76,8 +84,9 @@ export default function AddKnowledge({ author }: { author?: string }) {
 function AddDialog({ author, onClose }: { author: string; onClose: () => void }) {
   const kind = useVaultStore((s) => s.addKind)
   const setKind = useVaultStore((s) => s.setAddKind)
-  const addItem = useVaultStore((s) => s.addItem)
+  const ingest = useVaultStore((s) => s.ingest)
   const addDirective = useVaultStore((s) => s.addDirective)
+  const [saving, setSaving] = useState(false)
   const setDirectivesOpen = useVaultStore((s) => s.setDirectivesOpen)
 
   // Each type only has its own fields: paper takes a link and/or file, the rest take text.
@@ -87,6 +96,9 @@ function AddDialog({ author, onClose }: { author: string; onClose: () => void })
   const [file, setFile] = useState<File | null>(null)
   const [errors, setErrors] = useState<Errors>({})
   const fileInput = useRef<HTMLInputElement>(null)
+  // What this vault already holds, to refuse duplicates.
+  const { graph } = useVaultGraph(author)
+  const directives = useDirectivesIn([author])
 
   const hint = TYPES.find((t) => t.kind === kind)!.hint
 
@@ -99,7 +111,7 @@ function AddDialog({ author, onClose }: { author: string; onClose: () => void })
     setErrors({})
   }
 
-  function submit(e: FormEvent) {
+  async function submit(e: FormEvent) {
     e.preventDefault()
     const body = text.trim()
     const url = link.trim()
@@ -108,44 +120,59 @@ function AddDialog({ author, onClose }: { author: string; onClose: () => void })
     if (kind === 'paper') {
       if (!url && !file) next.paper = 'Add a link or attach a file.'
       else if (url && !isUrl(url)) next.link = 'Enter a valid link starting with http:// or https://.'
-    } else if (!body) {
-      next.text = {
-        note: 'Write something before adding.',
-        question: 'Write your question before adding.',
-        directive: 'Write the directive before adding.',
-      }[kind]
+      else if (url.length > LINK_LIMIT) next.link = `That link is too long (over ${LINK_LIMIT.toLocaleString()} characters).`
+      else if (url && graph.nodes.some((n) => n.kind === 'paper' && same(n.source_text, url))) {
+        next.link = 'That link is already in this vault.'
+      } else if (!url && file && graph.nodes.some((n) => n.kind === 'paper' && same(n.title, file.name))) {
+        next.file = `“${file.name}” is already in this vault.`
+      }
+    } else {
+      const limit = TEXT_LIMIT[kind]
+      if (!body) {
+        next.text = {
+          note: 'Write something before adding.',
+          question: 'Write your question before adding.',
+          directive: 'Write the directive before adding.',
+        }[kind]
+      } else if (body.length > limit) {
+        next.text = `Keep it under ${limit.toLocaleString()} characters (it’s ${body.length.toLocaleString()}).`
+      } else if (
+        kind === 'directive'
+          ? directives.some((d) => same(d.text, body))
+          : graph.nodes.some((n) => n.kind === kind && same(n.source_text, body))
+      ) {
+        next.text = `That ${kind} is already in this vault.`
+      }
     }
     setErrors(next)
     if (Object.keys(next).length) return
 
-    // TODO: send to the backend instead of keeping it in memory:
-    //   items      -> POST /api/vault/items      { person, kind, text, title? }
-    //   directives -> POST /api/vault/directives { person, text }
-    // The ingest route only takes `text`, so a paper link/file needs the backend to fetch or
-    // upload and extract the text first.
-    const now = Date.now() / 1000
-    const id = `local_${Date.now()}`
-    if (kind === 'directive') {
-      addDirective({ id: `dir_${id}`, person: author, text: body, created_at: now })
-      setDirectivesOpen(true)
-    } else {
-      const paper = kind === 'paper'
-      const title = paper
-        ? (file?.name ?? new URL(url).hostname.replace(/^www\./, ''))
-        : truncate(body.split('\n')[0], 60)
-      const item: VaultItemView = {
-        id,
-        person: author,
-        kind,
-        title,
-        summary: paper ? (url || (file?.name ?? '')) : body,
-        tags: [],
-        source_text: paper ? url : body,
-        investigate: false, // the backend's ingest LLM decides this
-        retrieval_count: 0,
-        created_at: now,
+    setSaving(true)
+    try {
+      if (kind === 'directive') {
+        // POST /vault/directives. Directives live in their own list (not the map): show it.
+        await addDirective(author, body)
+        setDirectivesOpen(true)
+      } else if (kind === 'paper') {
+        // POST /vault/items takes text only, so a paper is sent as its link plus whatever text can
+        // be read from the file here. FIXME: PDFs/Word files can't be read in the browser; the
+        // backend should fetch the link and extract file text itself.
+        const fileText = file && /\.(txt|md|markdown|csv|json|tex|html)$/i.test(file.name) ? await file.text() : ''
+        const text = [url, fileText || (file ? `(attached file: ${file.name})` : '')].filter(Boolean).join('\n\n')
+        await ingest({
+          person: author,
+          kind,
+          text,
+          title: file?.name ?? new URL(url).hostname.replace(/^www\./, ''),
+        })
+      } else {
+        // POST /vault/items: the vault LLM writes the title, summary and tags and links it up.
+        await ingest({ person: author, kind, text: body })
       }
-      addItem(item)
+    } catch (err) {
+      setSaving(false)
+      const message = err instanceof Error ? err.message : 'Could not add that.'
+      return setErrors(kind === 'paper' ? { paper: message } : { text: message })
     }
     onClose()
   }
@@ -203,15 +230,21 @@ function AddDialog({ author, onClose }: { author: string; onClose: () => void })
                 ref={fileInput}
                 type="file"
                 hidden
-                accept=".pdf,.txt,.md,.doc,.docx"
+                accept={ACCEPT.file}
                 onChange={(e) => {
-                  setFile(e.target.files?.[0] ?? null)
+                  const picked = e.target.files?.[0]
+                  if (fileInput.current) fileInput.current.value = '' // re-picking the same file still fires
+                  if (!picked) return
+                  // Same checks as the (parked) attachments feature: type, size, not empty.
+                  const { accepted, errors: problems } = checkPicked('file', [picked], [])
+                  if (accepted.length === 0) return setErrors({ file: problems[0] })
+                  setFile(picked)
                   setErrors({})
                 }}
               />
               <div
                 className={`flex items-center gap-2 rounded-lg border px-2 py-1.5 transition-colors ${
-                  errors.paper ? bad : ok
+                  errors.paper || errors.file ? bad : ok
                 }`}
               >
                 <button
@@ -241,7 +274,7 @@ function AddDialog({ author, onClose }: { author: string; onClose: () => void })
                   <span className="text-sm text-muted">No file chosen</span>
                 )}
               </div>
-              <ErrorText>{errors.paper}</ErrorText>
+              <ErrorText>{errors.file ?? errors.paper}</ErrorText>
             </div>
           </div>
         ) : (
@@ -261,15 +294,30 @@ function AddDialog({ author, onClose }: { author: string; onClose: () => void })
               }}
               className={`${field} ${errors.text ? bad : ok} resize-none leading-relaxed`}
             />
-            <ErrorText>{errors.text}</ErrorText>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <ErrorText>{errors.text}</ErrorText>
+              </div>
+              {/* Counter appears once you're close to the limit, and turns red past it. */}
+              {text.length >= TEXT_LIMIT[kind] * 0.8 && (
+                <span
+                  className={`ml-auto shrink-0 pt-1 text-xs ${
+                    text.length > TEXT_LIMIT[kind] ? 'text-kind-correction' : 'text-muted'
+                  }`}
+                >
+                  {text.length.toLocaleString()} / {TEXT_LIMIT[kind].toLocaleString()}
+                </span>
+              )}
+            </div>
           </div>
         )}
 
         <button
           type="submit"
-          className="mt-5 h-10 w-full rounded-xl bg-accent text-sm font-semibold text-accent-fg transition-opacity hover:opacity-85"
+          disabled={saving}
+          className="mt-5 h-10 w-full rounded-xl bg-accent text-sm font-semibold text-accent-fg transition-opacity hover:opacity-85 disabled:opacity-50"
         >
-          Add
+          {saving ? 'Adding…' : 'Add'}
         </button>
       </form>
     </Modal>

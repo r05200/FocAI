@@ -9,8 +9,14 @@ Ingest pipeline for one item:
      with a one-line reason; any link with a question on either end is forced to "investigate".
      Pairs judged "unrelated" (or not judged) get no edge.
 
-Storage: data/vaults/<person>.json holds that person's items (with embeddings);
-data/vaults/_edges.json holds every edge. Files are rewritten atomically after each ingest.
+Each item also carries two spots on the 3D mind map, cached with it: auto_position (the
+backend's layout: a new item goes beside its most similar neighbor, items loaded without one are
+laid out when the store starts, regenerate_layout() recomputes all of them) and position (only
+set when a person moved the card with the move tool, and never touched by a regeneration unless
+asked). See layout.py.
+
+Storage: data/vaults/<person>.json holds that person's items (with embeddings and positions);
+data/vaults/_edges.json holds every edge. Files are rewritten atomically after each change.
 """
 
 from __future__ import annotations
@@ -31,12 +37,15 @@ from pruner.core.llm import LLM
 from pruner.core.models import (
     IngestRequest,
     IngestResult,
+    ItemPosition,
+    Position,
     VaultEdge,
     VaultGraph,
     VaultItem,
     VaultJudgement,
     VaultSummary,
 )
+from pruner.vault import layout
 
 log = logging.getLogger(__name__)
 
@@ -123,6 +132,8 @@ class VaultStore:
         edges_path = self.dir / EDGES_FILE
         if edges_path.exists():
             self._edges = [VaultEdge.model_validate(e) for e in json.loads(edges_path.read_text())]
+        for person in self._lay_out_missing():  # e.g. seeded items that were never placed
+            self._save(person)
 
     def _write(self, path: Path, data: object) -> None:
         tmp = path.with_suffix(".tmp")
@@ -134,6 +145,74 @@ class VaultStore:
         items = [i.model_dump(mode="json") for i in self._items.values() if i.person == person]
         self._write(self.dir / f"{person}.json", items)
         self._write(self.dir / EDGES_FILE, [e.model_dump(mode="json") for e in self._edges])
+
+    # ---- layout (positions are cached on the items)
+
+    def _placed(self) -> list[tuple[list[float], tuple[float, float, float]]]:
+        """Embedding and current spot (moved by hand, else automatic) of every placed item."""
+        placed = []
+        for i in self._items.values():
+            spot = i.position or i.auto_position
+            if spot and i.embedding is not None:
+                placed.append((i.embedding, (spot.x, spot.y, spot.z)))
+        return placed
+
+    def _apply_pca(self, reset_moved: bool) -> set[str]:
+        """Recompute auto_position for every item with an embedding (and forget manual moves
+        if reset_moved). Returns the owners whose items changed."""
+        items = [i for i in self._items.values() if i.embedding is not None]
+        spots = layout.pca_positions([i.id for i in items],
+                                     np.array([i.embedding for i in items], dtype=np.float32))
+        owners = set()
+        for item in items:
+            x, y, z = spots[item.id]
+            item.auto_position = Position(x=x, y=y, z=z)
+            if reset_moved:
+                item.position = None
+            owners.add(item.person)
+        return owners
+
+    def _lay_out_missing(self) -> set[str]:
+        """Give every item without an auto_position one. Returns the owners that changed."""
+        missing = sorted((i for i in self._items.values()
+                          if i.auto_position is None and i.embedding is not None),
+                         key=lambda i: i.created_at)
+        if not missing:
+            return set()
+        placed = self._placed()
+        if not placed:  # nothing laid out yet: a full layout for everyone
+            return self._apply_pca(reset_moved=False)
+        for item in missing:
+            x, y, z = layout.place_near(item.id, item.embedding, placed)  # type: ignore[arg-type]
+            item.auto_position = Position(x=x, y=y, z=z)
+            placed.append((item.embedding, (x, y, z)))  # type: ignore[arg-type]
+        return {i.person for i in missing}
+
+    def move(self, item_id: str, x: float, y: float, z: float) -> VaultItem:
+        """The move tool: save where a card was moved to. Raises KeyError if there is no such
+        item."""
+        return self.move_many([ItemPosition(id=item_id, x=x, y=y, z=z)])[0]
+
+    def move_many(self, moves: list[ItemPosition]) -> list[VaultItem]:
+        """Save several moves at once. Nothing changes if any id is unknown (KeyError)."""
+        unknown = [m.id for m in moves if m.id not in self._items]
+        if unknown:
+            raise KeyError(unknown[0])
+        moved = []
+        for m in moves:
+            item = self._items[m.id]
+            item.position = Position(x=m.x, y=m.y, z=m.z)
+            moved.append(item)
+        for person in {i.person for i in moved}:
+            self._save(person)
+        return moved
+
+    def regenerate_layout(self, reset_moved: bool = False) -> VaultGraph:
+        """Recompute every automatic position (similar items close together), save, and return
+        the graph. Positions people set by hand stay unless reset_moved."""
+        for person in self._apply_pca(reset_moved):
+            self._save(person)
+        return self.graph()
 
     # ---- reads
 
@@ -209,6 +288,8 @@ class VaultStore:
                                      threshold=self.cfg.link_threshold)
             edges = await self._relate(item, neighbors)
 
+            x, y, z = layout.place_near(item.id, item.embedding, self._placed())
+            item.auto_position = Position(x=x, y=y, z=z)
             self._vaults.add(item.person)
             self._items[item.id] = item
             self._edges.extend(edges)

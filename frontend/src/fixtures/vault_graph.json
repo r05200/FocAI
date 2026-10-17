@@ -13,6 +13,8 @@
       ],
       "source_text": "Surveys eviction, quantization and merging methods for the KV cache. (full source text placeholder)",
       "investigate": false,
+      "position": null,
+      "auto_position": null,
       "retrieval_count": 3,
       "created_at": 1759913600.0
     },
@@ -28,6 +30,8 @@
       ],
       "source_text": "My notes: the speculative decoding history and speedups are already covered; skip. (full source text placeholder)",
       "investigate": false,
+      "position": null,
+      "auto_position": null,
       "retrieval_count": 2,
       "created_at": 1759913660.0
     },
@@ -44,6 +48,8 @@
       ],
       "source_text": "Open question: how much long-context recall is lost under 4-bit KV quantization. (full source text placeholder)",
       "investigate": false,
+      "position": null,
+      "auto_position": null,
       "retrieval_count": 1,
       "created_at": 1759913720.0
     },
@@ -60,6 +66,8 @@
       ],
       "source_text": "Studies how much intermediate agent output users can follow before overload. (full source text placeholder)",
       "investigate": false,
+      "position": null,
+      "auto_position": null,
       "retrieval_count": 0,
       "created_at": 1759913630.0
     },
@@ -76,6 +84,8 @@
       ],
       "source_text": "My notes: users judge speculative decoding by perceived latency, not throughput. (full source text placeholder)",
       "investigate": false,
+      "position": null,
+      "auto_position": null,
       "retrieval_count": 1,
       "created_at": 1759913690.0
     },
@@ -91,6 +101,8 @@
       ],
       "source_text": "Evaluates prompt compression on long documents; quality drops on reasoning tasks. (full source text placeholder)",
       "investigate": false,
+      "position": null,
+      "auto_position": null,
       "retrieval_count": 0,
       "created_at": 1759913750.0
     }

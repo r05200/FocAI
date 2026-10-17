@@ -14,6 +14,23 @@ from pruner.core.models import DeadEnd, Directive, Instruction, Objective
 _PLACEHOLDER = re.compile(r"\{\{(\w+)\}\}")
 
 
+def list_prompts() -> list[str]:
+    """Names of the templates in prompts/ (file stems), sorted."""
+    return sorted(p.stem for p in get_config().prompts_dir.glob("*.md") if p.stem != "README")
+
+
+def read_prompt(name: str) -> str | None:
+    """A template's raw text, or None if there is no such prompt. Only names from
+    list_prompts() are accepted, so a name can never point outside the prompts folder."""
+    if name not in list_prompts():
+        return None
+    return (get_config().prompts_dir / f"{name}.md").read_text()
+
+
+def placeholders(template: str) -> list[str]:
+    return sorted(set(_PLACEHOLDER.findall(template)))
+
+
 def render(name: str, **values: object) -> str:
     template = (get_config().prompts_dir / f"{name}.md").read_text()
     wanted = set(_PLACEHOLDER.findall(template))

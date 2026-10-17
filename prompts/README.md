@@ -10,3 +10,5 @@ so they can be tuned without touching logic. Planned (added as each step is buil
 - `profile.md`: known topics, open questions, ruled-out topics
 - `synthesize.md`: final answer from kept branches
 - `grader.md`: rubric coverage grader (separate from the pruner's judge)
+- `agent.md` (done): the research agent's turn (plan and first answer; no tools yet)
+- `amend_rate.md` (done): the amend-objectives agent's loose re-rating of sibling branches

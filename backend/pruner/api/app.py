@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from pruner.core.config import get_config
 
-from . import directives, nodes, questions, replays, runs, vault
+from . import directives, nodes, prompts, questions, replays, runs, system, vault
 
 
 def create_app() -> FastAPI:
@@ -24,7 +24,7 @@ def create_app() -> FastAPI:
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    for module in (runs, nodes, questions, vault, directives, replays):
+    for module in (runs, nodes, questions, vault, directives, prompts, system, replays):
         api.include_router(module.router)
     app.include_router(api)
     return app

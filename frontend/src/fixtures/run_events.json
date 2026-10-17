@@ -599,6 +599,8 @@
       ],
       "source_text": "Human override: restore n_spec.",
       "investigate": false,
+      "position": null,
+      "auto_position": null,
       "retrieval_count": 0,
       "created_at": 1760000031.0
     },
