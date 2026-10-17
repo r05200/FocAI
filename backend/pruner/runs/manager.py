@@ -441,6 +441,13 @@ class RunManager:
                     self.store.mark_stopped(run.id)
                     continue
                 state = self._running(run.id)
+                if run.workspace is not None and state.workspace is None:
+                    # its backup and versions are gone; carrying on would silently turn it into
+                    # a research run
+                    log.warning("not recovering run %s: its workspace folder is missing", run.id)
+                    self._live.pop(run.id, None)
+                    self.store.mark_stopped(run.id)
+                    continue
                 try:
                     self._lock_paths(run.id, run.paths)
                 except PathLocked as e:

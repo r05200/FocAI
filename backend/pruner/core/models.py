@@ -624,6 +624,10 @@ class PublicConfig(BaseModel):
     write_tool_calls_per_phase: int
     branch_finding_min_confidence: float
     experiment_timeout_s: float
+    experiment_cache: bool
+    research_queries_max: int
+    research_hits_per_query: int
+    research_fetch_pages: int
     vault_model: str
     embedding_model: str
     max_depth: int

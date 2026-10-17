@@ -56,7 +56,7 @@ def fingerprint(edit: Edit) -> str:
 # ---- syntax and signatures
 
 
-def _syntax_problem(rel: str, text: str) -> str | None | bool:
+def _syntax_problem(rel: str, text: str) -> str | bool | None:
     """A problem message, None if it parses, or False if this file type is not checked."""
     try:
         if rel.endswith(".py"):

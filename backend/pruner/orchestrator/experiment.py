@@ -91,8 +91,8 @@ def find_result(ws: Workspace, command: RunCommand, stdout: str,
                     return value, command.result_file
         except (OSError, PathError):
             pass
-    for line in reversed(stdout.strip().splitlines()):
-        line = line.strip()
+    for raw in reversed(stdout.strip().splitlines()):
+        line = raw.strip()
         if line.startswith(("{", "[")):
             try:
                 return json.loads(line), "stdout"

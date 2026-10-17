@@ -10,7 +10,7 @@ so they can be tuned without touching logic. Planned (added as each step is buil
 - `profile.md`: known topics, open questions, ruled-out topics
 - `synthesize.md`: final answer from kept branches
 - `grader.md`: rubric coverage grader (separate from the pruner's judge)
-- `agent.md` (done): the research agent's turn (plan and first answer; no tools yet)
+- `agent.md` (done): the single agent turn, used only when the manager has no orchestrator (every normal run goes through the orchestrator's propose/synthesize prompts)
 - `amend_rate.md` (done): the amend-objectives agent's loose re-rating of sibling branches
 - `propose.md` (done): the hypothesis phase: 2-3 hypotheses from different families, each with a planned experiment and a search/replace edit
 - `propose_repair.md` (done): one batched repair of proposals whose edits did not apply

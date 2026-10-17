@@ -54,36 +54,16 @@ it needs, and what milestone or session it came from.
 
 --- From backend audit (unwired routes and unused code) -----------------------------------------------
 
-[ ] Routes in backend/pruner/api/ that still return 501 (not_implemented):
-      - GET /api/runs/{id}/events (runs.py): SSE. History is easy (RunStore.events(run_id, after));
-        live tailing needs a broadcast/pub-sub that does not exist yet. Frontend polls until then
-        (frontend/src/api/stream.ts and hooks/useRunStream.ts are empty placeholders).
-      - POST /api/runs/{id}/nodes/{node_id}/keep | park | restore (nodes.py): need one shared
-        "apply node action and emit node_updated" helper in RunManager. park also records a dead end;
-        restore also resumes the agent from the node's path to the root and writes a vault
-        correction item (VaultStore.ingest).
-      - GET /api/runs/{id}/questions, POST .../questions/{qid}/answer (questions.py): no question
-        storage yet; answer must write to that person's vault and wake the agent.
-      - GET /api/replays, GET /api/replays/{name}/events (replays.py): nothing lists data/replays/
-        and there is no timed streamer.
+[x] DONE: every route that returned 501 is built (SSE events, keep/park/restore, questions,
+    replays), the node-logs and run-vault routes exist, and command.py, runner.py, phase_tools,
+    get_postscorer and Workspace.attachments_text are all wired in. No route returns 501 now.
 
-[ ] Routes the frontend already calls but the backend does not have (see frontend/src/api/client.ts):
-      - GET /api/runs/{id}/nodes/{node_id}/logs -> LogEntry[] (RunStore.append_log exists, unused)
-      - POST|GET /api/runs/{id}/vault -> RunVault (RunStore.run_vault / save_run_vault /
-        append_finding exist, unused)
+[ ] Code only tests call (kept on purpose): LLM.is_stopped, PreScorer.apply_rescore,
+    RunManager.is_running, EventBus.subscribers. Delete them if you want a leaner backend.
 
-[ ] Wire up or delete the code nothing calls yet (found with a symbol-usage scan):
-      - backend/pruner/runs/command.py (verify_command, runnable, clean_candidate, find_source,
-        missing_scripts) and backend/pruner/workspace/runner.py (run_command, CommandResult): never
-        imported; needed for running the user's command in the experiment phase.
-      - Workspace.attachments_text, Workspace.restore_baseline (workspace/workspace.py): unused.
-        restore_baseline is what the crash-recovery item above needs.
-      - phase_tools (agent/tools.py:385): unused.
-      - get_postscorer (api/deps.py): leftover, RunManager is not given a PostScorer.
-      - Only tests call: LLM.is_stopped, PreScorer.apply_rescore, RunManager.is_running.
-
-[ ] Scorers do not emit VaultRetrieved events or bump retrieval_count yet (TODO(agent loop) in
-    backend/pruner/pruning/prescorer.py and postscorer.py).
+[ ] The pre- and post-scorers' vault searches do not emit VaultRetrieved events or bump
+    retrieval_count (TODO(agent loop) in backend/pruner/pruning/prescorer.py and postscorer.py);
+    research experiments emit the event, but nothing bumps retrieval_count anywhere.
 
 [ ] Optional: ruff --select PLR0913 flags 25 functions with more than 5 arguments (mostly
     pruning/prescorer.py). Style only.
