@@ -1,0 +1,116 @@
+"""Server-sent event schema for one run.
+
+Every event carries the full object it concerns (a node snapshot, not a diff), so the
+frontend reducer is "replace by id" and replay is just re-sending saved events.
+The SSE `event:` name is the `type` field; `data:` is the event as JSON.
+"""
+
+from __future__ import annotations
+
+import time
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, Field, TypeAdapter
+
+from .models import Criterion, Node, Question, Run, VaultItemView
+
+
+class EventBase(BaseModel):
+    seq: int  # strictly increasing per run; lets the client detect gaps and resume
+    run_id: str
+    ts: float = Field(default_factory=time.time)
+
+
+class RunStarted(EventBase):
+    type: Literal["run_started"] = "run_started"
+    run: Run
+
+
+class ChecklistReady(EventBase):
+    type: Literal["checklist_ready"] = "checklist_ready"
+    checklist: list[Criterion]
+
+
+class NodeCreated(EventBase):
+    type: Literal["node_created"] = "node_created"
+    node: Node
+
+
+NodeChange = Literal["running", "scored", "done", "pruned", "kept", "restored", "failed"]
+
+
+class NodeUpdated(EventBase):
+    type: Literal["node_updated"] = "node_updated"
+    node: Node
+    change: NodeChange  # what happened, so the UI can animate it; node holds the new state
+
+
+class VaultRetrieved(EventBase):
+    """The agent or scorer searched the vault. Drives the pulse in both tabs."""
+
+    type: Literal["vault_retrieved"] = "vault_retrieved"
+    node_id: str | None
+    person: str
+    query: str
+    item_ids: list[str]  # empty when nothing was close enough
+    similarities: list[float]
+
+
+class VaultItemAdded(EventBase):
+    """An ingest, a human correction, or a 'learned this run' write-back."""
+
+    type: Literal["vault_item_added"] = "vault_item_added"
+    item: VaultItemView
+    neighbor_ids: list[str]
+
+
+class Activity(EventBase):
+    """One plain-language line for the activity feed."""
+
+    type: Literal["activity"] = "activity"
+    message: str
+    node_id: str | None = None
+
+
+class QuestionAsked(EventBase):
+    type: Literal["question_asked"] = "question_asked"
+    question: Question
+
+
+class QuestionAnswered(EventBase):
+    type: Literal["question_answered"] = "question_answered"
+    question: Question
+
+
+class RunCompleted(EventBase):
+    type: Literal["run_completed"] = "run_completed"
+    run: Run  # final totals and final_answer
+
+
+class RunFailed(EventBase):
+    type: Literal["run_failed"] = "run_failed"
+    error: str
+
+
+Event = Annotated[
+    RunStarted
+    | ChecklistReady
+    | NodeCreated
+    | NodeUpdated
+    | VaultRetrieved
+    | VaultItemAdded
+    | Activity
+    | QuestionAsked
+    | QuestionAnswered
+    | RunCompleted
+    | RunFailed,
+    Field(discriminator="type"),
+]
+
+event_adapter: TypeAdapter[Event] = TypeAdapter(Event)
+
+
+def parse_event(data: dict | str | bytes) -> Event:
+    if isinstance(data, dict):
+        return event_adapter.validate_python(data)
+    return event_adapter.validate_json(data)

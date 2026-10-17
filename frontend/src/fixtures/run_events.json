@@ -1,0 +1,802 @@
+[
+  {
+    "seq": 1,
+    "run_id": "r_fixture",
+    "ts": 1760000000.0,
+    "type": "run_started",
+    "run": {
+      "id": "r_fixture",
+      "question": "Which techniques reduce the inference cost of long-context LLMs? (placeholder question)",
+      "checklist": [],
+      "people": [
+        "alice",
+        "bob"
+      ],
+      "primary_person": "alice",
+      "mode": "pruned",
+      "status": "running",
+      "caps": {
+        "max_depth": 4,
+        "branching": 3,
+        "node_budget": 25
+      },
+      "final_answer": null,
+      "totals": {
+        "tokens": {
+          "agent": 0,
+          "scorer": 0,
+          "total": 0
+        },
+        "nodes_total": 0,
+        "nodes_pruned": 0,
+        "nodes_restored": 0,
+        "elapsed_s": 0.0
+      },
+      "created_at": 1760000000.0
+    }
+  },
+  {
+    "seq": 2,
+    "run_id": "r_fixture",
+    "ts": 1760000001.0,
+    "type": "node_created",
+    "node": {
+      "id": "n_root",
+      "run_id": "r_fixture",
+      "parent_id": null,
+      "depth": 0,
+      "type": "hypothesis",
+      "description": "Which techniques reduce the inference cost of long-context LLMs? (placeholder question)",
+      "status": "done",
+      "pre_score": null,
+      "post_score": null,
+      "decision": null,
+      "decided_by": "agent",
+      "result": null,
+      "criteria_progress": [],
+      "tokens": {
+        "agent": 0,
+        "scorer": 0,
+        "total": 0
+      },
+      "usefulness_count": 0,
+      "person_scores": {},
+      "created_at": 1760000001.0
+    }
+  },
+  {
+    "seq": 3,
+    "run_id": "r_fixture",
+    "ts": 1760000002.0,
+    "type": "checklist_ready",
+    "checklist": [
+      {
+        "id": "c1",
+        "text": "Names the main families of KV-cache reduction techniques"
+      },
+      {
+        "id": "c2",
+        "text": "States the accuracy cost of each family"
+      },
+      {
+        "id": "c3",
+        "text": "Addresses effect on long-context recall"
+      },
+      {
+        "id": "c4",
+        "text": "Addresses end-user latency, not just throughput"
+      }
+    ]
+  },
+  {
+    "seq": 4,
+    "run_id": "r_fixture",
+    "ts": 1760000003.0,
+    "type": "activity",
+    "message": "Planning: wrote a 4-item checklist for the question.",
+    "node_id": null
+  },
+  {
+    "seq": 5,
+    "run_id": "r_fixture",
+    "ts": 1760000004.0,
+    "type": "node_created",
+    "node": {
+      "id": "n_kv",
+      "run_id": "r_fixture",
+      "parent_id": "n_root",
+      "depth": 1,
+      "type": "reading",
+      "description": "Survey KV-cache compression methods",
+      "status": "pending",
+      "pre_score": {
+        "plausible": 0.9,
+        "relevant": 0.9,
+        "novel": 0.7,
+        "overall": 0.8333
+      },
+      "post_score": null,
+      "decision": null,
+      "decided_by": null,
+      "result": null,
+      "criteria_progress": [],
+      "tokens": {
+        "agent": 0,
+        "scorer": 0,
+        "total": 0
+      },
+      "usefulness_count": 0,
+      "person_scores": {},
+      "created_at": 1760000004.0
+    }
+  },
+  {
+    "seq": 6,
+    "run_id": "r_fixture",
+    "ts": 1760000004.0,
+    "type": "node_created",
+    "node": {
+      "id": "n_quant",
+      "run_id": "r_fixture",
+      "parent_id": "n_root",
+      "depth": 1,
+      "type": "hypothesis",
+      "description": "KV quantization preserves long-context recall",
+      "status": "pending",
+      "pre_score": {
+        "plausible": 0.7,
+        "relevant": 0.8,
+        "novel": 0.8,
+        "overall": 0.7667
+      },
+      "post_score": null,
+      "decision": null,
+      "decided_by": null,
+      "result": null,
+      "criteria_progress": [],
+      "tokens": {
+        "agent": 0,
+        "scorer": 0,
+        "total": 0
+      },
+      "usefulness_count": 0,
+      "person_scores": {},
+      "created_at": 1760000004.0
+    }
+  },
+  {
+    "seq": 7,
+    "run_id": "r_fixture",
+    "ts": 1760000004.0,
+    "type": "node_created",
+    "node": {
+      "id": "n_spec",
+      "run_id": "r_fixture",
+      "parent_id": "n_root",
+      "depth": 1,
+      "type": "reading",
+      "description": "Review the history of speculative decoding",
+      "status": "pending",
+      "pre_score": {
+        "plausible": 0.6,
+        "relevant": 0.4,
+        "novel": 0.1,
+        "overall": 0.3667
+      },
+      "post_score": null,
+      "decision": null,
+      "decided_by": null,
+      "result": null,
+      "criteria_progress": [],
+      "tokens": {
+        "agent": 0,
+        "scorer": 0,
+        "total": 0
+      },
+      "usefulness_count": 0,
+      "person_scores": {},
+      "created_at": 1760000004.0
+    }
+  },
+  {
+    "seq": 8,
+    "run_id": "r_fixture",
+    "ts": 1760000005.0,
+    "type": "vault_retrieved",
+    "node_id": "n_spec",
+    "person": "alice",
+    "query": "history of speculative decoding",
+    "item_ids": [
+      "v_a2"
+    ],
+    "similarities": [
+      0.81
+    ]
+  },
+  {
+    "seq": 9,
+    "run_id": "r_fixture",
+    "ts": 1760000005.0,
+    "type": "node_updated",
+    "node": {
+      "id": "n_spec",
+      "run_id": "r_fixture",
+      "parent_id": "n_root",
+      "depth": 1,
+      "type": "reading",
+      "description": "Review the history of speculative decoding",
+      "status": "pruned",
+      "pre_score": {
+        "plausible": 0.6,
+        "relevant": 0.4,
+        "novel": 0.1,
+        "overall": 0.3667
+      },
+      "post_score": null,
+      "decision": {
+        "verdict": "prune",
+        "stage": "pre",
+        "reason": "Your note 'Speculative decoding is well understood' already covers this.",
+        "vault_items_used": [
+          "v_a2"
+        ]
+      },
+      "decided_by": "agent",
+      "result": null,
+      "criteria_progress": [],
+      "tokens": {
+        "agent": 0,
+        "scorer": 410,
+        "total": 410
+      },
+      "usefulness_count": 0,
+      "person_scores": {
+        "alice": {
+          "person": "alice",
+          "verdict": "prune",
+          "score": 0.37,
+          "reason": "Already covered by your own note.",
+          "vault_items_used": [
+            "v_a2"
+          ]
+        },
+        "bob": {
+          "person": "bob",
+          "verdict": "keep",
+          "score": 0.78,
+          "reason": "Bob's note says latency framing matters to end users.",
+          "vault_items_used": [
+            "v_b2"
+          ]
+        }
+      },
+      "created_at": 1760000004.0
+    },
+    "change": "pruned"
+  },
+  {
+    "seq": 10,
+    "run_id": "r_fixture",
+    "ts": 1760000006.0,
+    "type": "activity",
+    "message": "Pruned 'speculative decoding history': you already have a note on it.",
+    "node_id": "n_spec"
+  },
+  {
+    "seq": 11,
+    "run_id": "r_fixture",
+    "ts": 1760000007.0,
+    "type": "node_updated",
+    "node": {
+      "id": "n_kv",
+      "run_id": "r_fixture",
+      "parent_id": "n_root",
+      "depth": 1,
+      "type": "reading",
+      "description": "Survey KV-cache compression methods",
+      "status": "running",
+      "pre_score": {
+        "plausible": 0.9,
+        "relevant": 0.9,
+        "novel": 0.7,
+        "overall": 0.8333
+      },
+      "post_score": null,
+      "decision": null,
+      "decided_by": null,
+      "result": null,
+      "criteria_progress": [],
+      "tokens": {
+        "agent": 0,
+        "scorer": 0,
+        "total": 0
+      },
+      "usefulness_count": 0,
+      "person_scores": {},
+      "created_at": 1760000004.0
+    },
+    "change": "running"
+  },
+  {
+    "seq": 12,
+    "run_id": "r_fixture",
+    "ts": 1760000008.0,
+    "type": "vault_retrieved",
+    "node_id": "n_kv",
+    "person": "alice",
+    "query": "KV-cache compression",
+    "item_ids": [
+      "v_a1",
+      "v_a3"
+    ],
+    "similarities": [
+      0.88,
+      0.74
+    ]
+  },
+  {
+    "seq": 13,
+    "run_id": "r_fixture",
+    "ts": 1760000010.0,
+    "type": "node_updated",
+    "node": {
+      "id": "n_kv",
+      "run_id": "r_fixture",
+      "parent_id": "n_root",
+      "depth": 1,
+      "type": "reading",
+      "description": "Survey KV-cache compression methods",
+      "status": "done",
+      "pre_score": {
+        "plausible": 0.9,
+        "relevant": 0.9,
+        "novel": 0.7,
+        "overall": 0.8333
+      },
+      "post_score": 0.82,
+      "decision": {
+        "verdict": "keep",
+        "stage": "post",
+        "reason": "Advances the technique-families and accuracy-cost criteria.",
+        "vault_items_used": [
+          "v_a1"
+        ]
+      },
+      "decided_by": "agent",
+      "result": "Three families: eviction, quantization, merging. Accuracy cost varies.",
+      "criteria_progress": [
+        "c1",
+        "c2"
+      ],
+      "tokens": {
+        "agent": 1800,
+        "scorer": 520,
+        "total": 2320
+      },
+      "usefulness_count": 0,
+      "person_scores": {},
+      "created_at": 1760000004.0
+    },
+    "change": "done"
+  },
+  {
+    "seq": 14,
+    "run_id": "r_fixture",
+    "ts": 1760000012.0,
+    "type": "node_updated",
+    "node": {
+      "id": "n_quant",
+      "run_id": "r_fixture",
+      "parent_id": "n_root",
+      "depth": 1,
+      "type": "hypothesis",
+      "description": "KV quantization preserves long-context recall",
+      "status": "done",
+      "pre_score": {
+        "plausible": 0.7,
+        "relevant": 0.8,
+        "novel": 0.8,
+        "overall": 0.7667
+      },
+      "post_score": 0.66,
+      "decision": {
+        "verdict": "keep",
+        "stage": "post",
+        "reason": "Advances the long-context recall criterion.",
+        "vault_items_used": [
+          "v_a3"
+        ]
+      },
+      "decided_by": "agent",
+      "result": "Recall holds at 8-bit; degrades on retrieval-heavy prompts at 4-bit.",
+      "criteria_progress": [
+        "c3"
+      ],
+      "tokens": {
+        "agent": 1500,
+        "scorer": 480,
+        "total": 1980
+      },
+      "usefulness_count": 0,
+      "person_scores": {},
+      "created_at": 1760000004.0
+    },
+    "change": "done"
+  },
+  {
+    "seq": 15,
+    "run_id": "r_fixture",
+    "ts": 1760000014.0,
+    "type": "node_created",
+    "node": {
+      "id": "n_prompt",
+      "run_id": "r_fixture",
+      "parent_id": "n_kv",
+      "depth": 2,
+      "type": "experiment",
+      "description": "Test prompt compression on long documents",
+      "status": "pending",
+      "pre_score": {
+        "plausible": 0.6,
+        "relevant": 0.6,
+        "novel": 0.6,
+        "overall": 0.6
+      },
+      "post_score": null,
+      "decision": null,
+      "decided_by": null,
+      "result": null,
+      "criteria_progress": [],
+      "tokens": {
+        "agent": 0,
+        "scorer": 0,
+        "total": 0
+      },
+      "usefulness_count": 0,
+      "person_scores": {},
+      "created_at": 1760000014.0
+    }
+  },
+  {
+    "seq": 16,
+    "run_id": "r_fixture",
+    "ts": 1760000018.0,
+    "type": "node_updated",
+    "node": {
+      "id": "n_prompt",
+      "run_id": "r_fixture",
+      "parent_id": "n_kv",
+      "depth": 2,
+      "type": "experiment",
+      "description": "Test prompt compression on long documents",
+      "status": "pruned",
+      "pre_score": {
+        "plausible": 0.6,
+        "relevant": 0.6,
+        "novel": 0.6,
+        "overall": 0.6
+      },
+      "post_score": 0.2,
+      "decision": {
+        "verdict": "prune",
+        "stage": "post",
+        "reason": "Advances none of the four criteria.",
+        "vault_items_used": []
+      },
+      "decided_by": "agent",
+      "result": "Compression helps cost but says nothing about the checklist items.",
+      "criteria_progress": [],
+      "tokens": {
+        "agent": 1400,
+        "scorer": 450,
+        "total": 1850
+      },
+      "usefulness_count": 0,
+      "person_scores": {},
+      "created_at": 1760000014.0
+    },
+    "change": "pruned"
+  },
+  {
+    "seq": 17,
+    "run_id": "r_fixture",
+    "ts": 1760000018.0,
+    "type": "activity",
+    "message": "Pruned 'prompt compression test': it advanced no checklist item.",
+    "node_id": "n_prompt"
+  },
+  {
+    "seq": 18,
+    "run_id": "r_fixture",
+    "ts": 1760000030.0,
+    "type": "node_updated",
+    "node": {
+      "id": "n_spec",
+      "run_id": "r_fixture",
+      "parent_id": "n_root",
+      "depth": 1,
+      "type": "reading",
+      "description": "Review the history of speculative decoding",
+      "status": "pending",
+      "pre_score": {
+        "plausible": 0.6,
+        "relevant": 0.4,
+        "novel": 0.1,
+        "overall": 0.3667
+      },
+      "post_score": null,
+      "decision": {
+        "verdict": "keep",
+        "stage": "human",
+        "reason": "Restored by alice: latency framing is worth checking.",
+        "vault_items_used": [
+          "v_b2"
+        ]
+      },
+      "decided_by": "human",
+      "result": null,
+      "criteria_progress": [],
+      "tokens": {
+        "agent": 0,
+        "scorer": 410,
+        "total": 410
+      },
+      "usefulness_count": 0,
+      "person_scores": {
+        "alice": {
+          "person": "alice",
+          "verdict": "prune",
+          "score": 0.37,
+          "reason": "Already covered by your own note.",
+          "vault_items_used": [
+            "v_a2"
+          ]
+        },
+        "bob": {
+          "person": "bob",
+          "verdict": "keep",
+          "score": 0.78,
+          "reason": "Bob's note says latency framing matters to end users.",
+          "vault_items_used": [
+            "v_b2"
+          ]
+        }
+      },
+      "created_at": 1760000004.0
+    },
+    "change": "restored"
+  },
+  {
+    "seq": 19,
+    "run_id": "r_fixture",
+    "ts": 1760000031.0,
+    "type": "vault_item_added",
+    "item": {
+      "id": "v_c1",
+      "person": "alice",
+      "kind": "correction",
+      "title": "[fixture] Correction: latency framing is worth a look",
+      "summary": "I restored a pruned speculative-decoding branch; the latency angle was new.",
+      "tags": [
+        "speculative-decoding",
+        "latency"
+      ],
+      "source_text": "Human override: restore n_spec.",
+      "retrieval_count": 0,
+      "created_at": 1760000031.0
+    },
+    "neighbor_ids": [
+      "v_a2",
+      "v_b2"
+    ]
+  },
+  {
+    "seq": 20,
+    "run_id": "r_fixture",
+    "ts": 1760000031.0,
+    "type": "activity",
+    "message": "Added your correction to your vault.",
+    "node_id": null
+  },
+  {
+    "seq": 21,
+    "run_id": "r_fixture",
+    "ts": 1760000032.0,
+    "type": "node_updated",
+    "node": {
+      "id": "n_spec",
+      "run_id": "r_fixture",
+      "parent_id": "n_root",
+      "depth": 1,
+      "type": "reading",
+      "description": "Review the history of speculative decoding",
+      "status": "running",
+      "pre_score": {
+        "plausible": 0.6,
+        "relevant": 0.4,
+        "novel": 0.1,
+        "overall": 0.3667
+      },
+      "post_score": null,
+      "decision": {
+        "verdict": "keep",
+        "stage": "human",
+        "reason": "Restored by alice: latency framing is worth checking.",
+        "vault_items_used": [
+          "v_b2"
+        ]
+      },
+      "decided_by": "human",
+      "result": null,
+      "criteria_progress": [],
+      "tokens": {
+        "agent": 0,
+        "scorer": 410,
+        "total": 410
+      },
+      "usefulness_count": 0,
+      "person_scores": {
+        "alice": {
+          "person": "alice",
+          "verdict": "prune",
+          "score": 0.37,
+          "reason": "Already covered by your own note.",
+          "vault_items_used": [
+            "v_a2"
+          ]
+        },
+        "bob": {
+          "person": "bob",
+          "verdict": "keep",
+          "score": 0.78,
+          "reason": "Bob's note says latency framing matters to end users.",
+          "vault_items_used": [
+            "v_b2"
+          ]
+        }
+      },
+      "created_at": 1760000004.0
+    },
+    "change": "running"
+  },
+  {
+    "seq": 22,
+    "run_id": "r_fixture",
+    "ts": 1760000040.0,
+    "type": "node_updated",
+    "node": {
+      "id": "n_spec",
+      "run_id": "r_fixture",
+      "parent_id": "n_root",
+      "depth": 1,
+      "type": "reading",
+      "description": "Review the history of speculative decoding",
+      "status": "done",
+      "pre_score": {
+        "plausible": 0.6,
+        "relevant": 0.4,
+        "novel": 0.1,
+        "overall": 0.3667
+      },
+      "post_score": 0.74,
+      "decision": {
+        "verdict": "keep",
+        "stage": "human",
+        "reason": "Restored by alice: latency framing is worth checking.",
+        "vault_items_used": [
+          "v_b2"
+        ]
+      },
+      "decided_by": "human",
+      "result": "Speculative decoding cuts perceived latency, which matters most to end users.",
+      "criteria_progress": [
+        "c4"
+      ],
+      "tokens": {
+        "agent": 1600,
+        "scorer": 880,
+        "total": 2480
+      },
+      "usefulness_count": 1,
+      "person_scores": {
+        "alice": {
+          "person": "alice",
+          "verdict": "prune",
+          "score": 0.37,
+          "reason": "Already covered by your own note.",
+          "vault_items_used": [
+            "v_a2"
+          ]
+        },
+        "bob": {
+          "person": "bob",
+          "verdict": "keep",
+          "score": 0.78,
+          "reason": "Bob's note says latency framing matters to end users.",
+          "vault_items_used": [
+            "v_b2"
+          ]
+        }
+      },
+      "created_at": 1760000004.0
+    },
+    "change": "done"
+  },
+  {
+    "seq": 23,
+    "run_id": "r_fixture",
+    "ts": 1760000040.0,
+    "type": "activity",
+    "message": "Restored branch advanced the end-user latency criterion.",
+    "node_id": "n_spec"
+  },
+  {
+    "seq": 24,
+    "run_id": "r_fixture",
+    "ts": 1760000041.0,
+    "type": "question_asked",
+    "question": {
+      "id": "q_fixture",
+      "run_id": "r_fixture",
+      "node_id": "n_spec",
+      "person": "bob",
+      "text": "Alice pruned this and then restored it. Is the latency framing worth including?",
+      "status": "pending",
+      "answer": null,
+      "created_at": 1760000041.0
+    }
+  },
+  {
+    "seq": 25,
+    "run_id": "r_fixture",
+    "ts": 1760000094.0,
+    "type": "run_completed",
+    "run": {
+      "id": "r_fixture",
+      "question": "Which techniques reduce the inference cost of long-context LLMs? (placeholder question)",
+      "checklist": [
+        {
+          "id": "c1",
+          "text": "Names the main families of KV-cache reduction techniques"
+        },
+        {
+          "id": "c2",
+          "text": "States the accuracy cost of each family"
+        },
+        {
+          "id": "c3",
+          "text": "Addresses effect on long-context recall"
+        },
+        {
+          "id": "c4",
+          "text": "Addresses end-user latency, not just throughput"
+        }
+      ],
+      "people": [
+        "alice",
+        "bob"
+      ],
+      "primary_person": "alice",
+      "mode": "pruned",
+      "status": "done",
+      "caps": {
+        "max_depth": 4,
+        "branching": 3,
+        "node_budget": 25
+      },
+      "final_answer": "Placeholder final answer synthesized from kept branches.",
+      "totals": {
+        "tokens": {
+          "agent": 6300,
+          "scorer": 2330,
+          "total": 8630
+        },
+        "nodes_total": 5,
+        "nodes_pruned": 1,
+        "nodes_restored": 1,
+        "elapsed_s": 94.2
+      },
+      "created_at": 1760000000.0
+    }
+  }
+]

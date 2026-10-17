@@ -1,0 +1,90 @@
+[
+  {
+    "id": "v_a1",
+    "person": "alice",
+    "kind": "paper",
+    "title": "[fixture] KV-cache compression survey",
+    "summary": "Surveys eviction, quantization and merging methods for the KV cache.",
+    "tags": [
+      "kv-cache",
+      "compression",
+      "long-context"
+    ],
+    "source_text": "Surveys eviction, quantization and merging methods for the KV cache. (full source text placeholder)",
+    "retrieval_count": 3,
+    "created_at": 1759913600.0
+  },
+  {
+    "id": "v_a2",
+    "person": "alice",
+    "kind": "note",
+    "title": "[fixture] Speculative decoding is well understood",
+    "summary": "My notes: the speculative decoding history and speedups are already covered; skip.",
+    "tags": [
+      "speculative-decoding",
+      "latency"
+    ],
+    "source_text": "My notes: the speculative decoding history and speedups are already covered; skip. (full source text placeholder)",
+    "retrieval_count": 2,
+    "created_at": 1759913660.0
+  },
+  {
+    "id": "v_a3",
+    "person": "alice",
+    "kind": "question",
+    "title": "[fixture] Does KV quantization hurt recall?",
+    "summary": "Open question: how much long-context recall is lost under 4-bit KV quantization.",
+    "tags": [
+      "kv-cache",
+      "quantization",
+      "long-context"
+    ],
+    "source_text": "Open question: how much long-context recall is lost under 4-bit KV quantization. (full source text placeholder)",
+    "retrieval_count": 1,
+    "created_at": 1759913720.0
+  },
+  {
+    "id": "v_b1",
+    "person": "bob",
+    "kind": "paper",
+    "title": "[fixture] Cognitive load in agent interfaces",
+    "summary": "Studies how much intermediate agent output users can follow before overload.",
+    "tags": [
+      "hci",
+      "agents",
+      "cognitive-load"
+    ],
+    "source_text": "Studies how much intermediate agent output users can follow before overload. (full source text placeholder)",
+    "retrieval_count": 0,
+    "created_at": 1759913630.0
+  },
+  {
+    "id": "v_b2",
+    "person": "bob",
+    "kind": "note",
+    "title": "[fixture] Latency framing matters to end users",
+    "summary": "My notes: users judge speculative decoding by perceived latency, not throughput.",
+    "tags": [
+      "speculative-decoding",
+      "latency",
+      "hci"
+    ],
+    "source_text": "My notes: users judge speculative decoding by perceived latency, not throughput. (full source text placeholder)",
+    "retrieval_count": 1,
+    "created_at": 1759913690.0
+  },
+  {
+    "id": "v_b3",
+    "person": "bob",
+    "kind": "paper",
+    "title": "[fixture] Prompt compression for documents",
+    "summary": "Evaluates prompt compression on long documents; quality drops on reasoning tasks.",
+    "tags": [
+      "prompt-compression",
+      "long-context"
+    ],
+    "source_text": "Evaluates prompt compression on long documents; quality drops on reasoning tasks. (full source text placeholder)",
+    "retrieval_count": 0,
+    "created_at": 1759913750.0
+  }
+]
