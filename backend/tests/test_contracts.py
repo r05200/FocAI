@@ -5,10 +5,9 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from pruner.config import get_config
-from pruner.events import NodeUpdated, event_adapter, parse_event
-from pruner.fixtures import build_fixtures
-from pruner.models import (
+from pruner.core.config import get_config
+from pruner.core.events import NodeUpdated, event_adapter, parse_event
+from pruner.core.models import (
     Node,
     PreScore,
     RunSnapshot,
@@ -17,6 +16,7 @@ from pruner.models import (
     VaultItem,
     VaultItemView,
 )
+from pruner.fixtures import build_fixtures
 
 
 def test_config_defaults_match_prd_caps():
@@ -65,8 +65,8 @@ def test_fixture_story_has_the_key_moment():
     parsed = [parse_event(e) for e in build_fixtures()["run_events.json"]]
     updates = [e for e in parsed if isinstance(e, NodeUpdated) and e.node.id == "n_spec"]
     changes = [e.change for e in updates]
-    # pruned citing a vault note -> restored by a human -> runs -> done and useful
-    assert changes == ["pruned", "restored", "running", "done"]
+    # parked citing a vault note -> restored by a human -> runs -> done and useful
+    assert changes == ["parked", "restored", "running", "done"]
     assert updates[0].node.decision.vault_items_used == ["v_a2"]
     assert updates[1].node.decided_by == "human"
     assert updates[-1].node.usefulness_count == 1

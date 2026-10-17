@@ -5,8 +5,9 @@ Ingest pipeline for one item:
   2. The item is embedded.
   3. Its nearest existing items (any person) with cosine similarity >= cfg.link_threshold,
      at most cfg.neighbors_per_item of them, become candidate links.
-  4. The vault LLM labels each link contradicts / supports / agrees / unrelated, with a
-     one-line reason. Pairs judged "unrelated" (or not judged) get no edge.
+  4. The vault LLM labels each link contradicts / supports / agrees / investigate / unrelated,
+     with a one-line reason; any link with a question on either end is forced to "investigate".
+     Pairs judged "unrelated" (or not judged) get no edge.
 
 Storage: data/vaults/<person>.json holds that person's items (with embeddings);
 data/vaults/_edges.json holds every edge. Files are rewritten atomically after each ingest.
@@ -18,21 +19,23 @@ import asyncio
 import json
 import logging
 import re
+from collections.abc import Collection
 from pathlib import Path
 
 import numpy as np
 from pydantic import BaseModel, Field
 
-from . import prompts
-from .config import Config, get_config
-from .llm import LLM
-from .models import (
+from pruner.core import prompts
+from pruner.core.config import Config, get_config
+from pruner.core.llm import LLM
+from pruner.core.models import (
     IngestRequest,
     IngestResult,
     VaultEdge,
     VaultGraph,
     VaultItem,
     VaultJudgement,
+    VaultSummary,
 )
 
 log = logging.getLogger(__name__)
@@ -45,10 +48,15 @@ MAX_TAGS = 5
 # --------------------------------------------------------------------------- LLM output shapes
 
 
+class VaultExistsError(ValueError):
+    """The person already has a vault."""
+
+
 class IngestDraft(BaseModel):
     title: str
     summary: str
     tags: list[str]
+    investigate: bool = False
 
 
 class RelationJudgement(BaseModel):
@@ -68,11 +76,15 @@ def normalize_tag(tag: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", tag.strip().lower()).strip("-")
 
 
+def wants_investigation(item: VaultItem) -> bool:
+    return item.kind == "question" or item.investigate
+
+
 def one_line(text: str) -> str:
     return " ".join(text.split())
 
 
-def _unit(vectors: np.ndarray) -> np.ndarray:
+def unit_vectors(vectors: np.ndarray) -> np.ndarray:
     norms = np.linalg.norm(vectors, axis=-1, keepdims=True)
     return vectors / np.where(norms == 0, 1, norms)
 
@@ -92,6 +104,7 @@ class VaultStore:
         self.llm = llm or LLM(self.cfg)
         self._items: dict[str, VaultItem] = {}
         self._edges: list[VaultEdge] = []
+        self._vaults: set[str] = set()  # every person with a vault, even an empty one
         self._lock = asyncio.Lock()  # one ingest at a time, so neighbors are never missed
         self._load()
 
@@ -101,8 +114,9 @@ class VaultStore:
         if not self.dir.exists():
             return
         for path in sorted(self.dir.glob("*.json")):
-            if path.name == EDGES_FILE:
+            if path.name.startswith("_"):  # _edges.json, _directives.json: not item files
                 continue
+            self._vaults.add(path.stem)
             for raw in json.loads(path.read_text()):
                 item = VaultItem.model_validate(raw)
                 self._items[item.id] = item
@@ -124,7 +138,22 @@ class VaultStore:
     # ---- reads
 
     def people(self) -> list[str]:
-        return sorted({i.person for i in self._items.values()})
+        return sorted(self._vaults | {i.person for i in self._items.values()})
+
+    def summary(self, person: str) -> VaultSummary:
+        return VaultSummary(person=person,
+                            item_count=sum(i.person == person for i in self._items.values()))
+
+    def create_vault(self, person: str) -> VaultSummary:
+        """Create an empty vault for a person (stored as data/vaults/<person>.json).
+        Raises VaultExistsError if they already have one. Ingesting into a person who has no
+        vault still creates it implicitly."""
+        if person in self.people():
+            raise VaultExistsError(person)
+        self._vaults.add(person)
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self._write(self.dir / f"{person}.json", [])
+        return self.summary(person)
 
     def tags(self) -> list[str]:
         return sorted({t for i in self._items.values() for t in i.tags})
@@ -140,15 +169,18 @@ class VaultStore:
 
     def nearest(self, embedding: list[float], *, k: int, threshold: float,
                 exclude: frozenset[str] = frozenset(), person: str | None = None,
+                people: Collection[str] | None = None,
                 ) -> list[tuple[VaultItem, float]]:
-        """Top-k items by cosine similarity, at or above threshold, best first."""
+        """Top-k items by cosine similarity, at or above threshold, best first. `person` or
+        `people` limits the search to those owners (an empty `people` searches nothing)."""
         pool = [i for i in self._items.values()
                 if i.embedding is not None and i.id not in exclude
-                and (person is None or i.person == person)]
+                and (person is None or i.person == person)
+                and (people is None or i.person in people)]
         if not pool:
             return []
-        matrix = _unit(np.array([i.embedding for i in pool], dtype=np.float32))
-        sims = matrix @ _unit(np.array(embedding, dtype=np.float32))
+        matrix = unit_vectors(np.array([i.embedding for i in pool], dtype=np.float32))
+        sims = matrix @ unit_vectors(np.array(embedding, dtype=np.float32))
         order = np.argsort(-sims)[:k]
         return [(pool[j], float(sims[j])) for j in order if sims[j] >= threshold]
 
@@ -168,6 +200,7 @@ class VaultStore:
             item = VaultItem(
                 person=req.person, kind=req.kind, title=one_line(req.title or draft.title),
                 summary=one_line(draft.summary), tags=tags, source_text=req.text.strip(),
+                investigate=draft.investigate,
             )
             [item.embedding] = await self.llm.embed([embedding_text(item)],
                                                     purpose="vault_embed")
@@ -176,6 +209,7 @@ class VaultStore:
                                      threshold=self.cfg.link_threshold)
             edges = await self._relate(item, neighbors)
 
+            self._vaults.add(item.person)
             self._items[item.id] = item
             self._edges.extend(edges)
             self._save(item.person)
@@ -203,6 +237,10 @@ class VaultStore:
             if j is None:
                 log.warning("vault LLM gave no relation for neighbor %s; no edge", n.id)
             elif j.relation != "unrelated":
+                # Any link touching a question or a lead is something to look into, whatever the
+                # LLM said.
+                relation = ("investigate" if wants_investigation(item) or wants_investigation(n)
+                            else j.relation)
                 edges.append(VaultEdge(source=item.id, target=n.id, weight=round(sim, 4),
-                                       relation=j.relation, reason=one_line(j.reason)))
+                                       relation=relation, reason=one_line(j.reason)))
         return edges

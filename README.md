@@ -4,18 +4,18 @@ A human-steered research agent with a knowledge vault, built for Hack the Valley
 Agents explore, humans steer, and the tree shows everyone what is happening and why.
 
 - **Run tab:** a live tree of the agent's work. Branches are scored against the person's own
-  vault, then kept or pruned with a reason. Humans can keep, prune, restore and answer questions.
+  vault, then kept or parked with a reason. Humans can keep, park, restore and answer questions.
 - **Vault tab:** a mind map of what a person has read, noted or asked. The agent searches it, so
   "relevant" means relevant *and new to this person*.
 
 **Status:** the vault backend works end to end (ingest with LLM title/blurb/tags, embeddings,
-similarity links labelled contradicts / supports / agrees / unrelated). The agent, tree and UI
+similarity links labelled contradicts / supports / agrees / investigate / unrelated). The agent, tree and UI
 are not built yet.
 
 ## Layout
 
 ```
-backend/    FastAPI + pydantic (uv). pruner/models.py and events.py are the contract.
+backend/    FastAPI + pydantic (uv). pruner/core/models.py and events.py are the contract.
 frontend/   Vite + React + TypeScript. src/types.ts mirrors the backend models.
 prompts/    One file per prompt (added as each step is built).
 data/       Vaults and replays (committed); LLM cache and run state (git-ignored).

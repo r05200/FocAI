@@ -6,7 +6,7 @@ The fixtures are built from the real pydantic models, so they cannot drift from 
 Regenerate with:  cd backend && uv run python -m pruner.fixtures
 tests/test_fixtures.py fails if the committed JSON differs from what this module produces.
 
-The story mirrors the demo's key moment: the agent prunes a branch citing the user's own
+The story mirrors the demo's key moment: the agent parks a branch citing the user's own
 vault note, the user restores it, and the agent finds something useful there.
 """
 
@@ -16,25 +16,26 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .config import REPO_ROOT
-from .events import (
+from pruner.core.config import REPO_ROOT
+from pruner.core.events import (
     Activity,
-    ChecklistReady,
     Event,
     NodeCreated,
     NodeUpdated,
+    ObjectivesUpdated,
     QuestionAsked,
     RunCompleted,
     RunStarted,
     VaultItemAdded,
     VaultRetrieved,
 )
-from .models import (
+from pruner.core.models import (
     Caps,
-    Criterion,
     DeadEnd,
     Decision,
+    Instruction,
     Node,
+    Objective,
     PersonScore,
     PreScore,
     Question,
@@ -91,8 +92,8 @@ def _vault_graph(items: list[VaultItemView]) -> VaultGraph:
                          relation=relation, reason=reason)  # type: ignore[arg-type]
 
     edges = [
-        edge("v_a3", "v_a1", 0.83, "supports",
-             "The survey's quantization results bear directly on the recall question."),
+        edge("v_a3", "v_a1", 0.83, "investigate",
+             "The survey covers KV quantization; worth reading to answer the recall question."),
         edge("v_b2", "v_a2", 0.79, "contradicts",
              "Bob says latency framing still matters; Alice's note says the topic is settled."),
         edge("v_b2", "v_b1", 0.58, "agrees",
@@ -113,16 +114,19 @@ class _Emitter:
 
 def _build() -> dict[str, Any]:
     items = _vault_items()
-    checklist = [
-        Criterion(id="c1", text="Names the main families of KV-cache reduction techniques"),
-        Criterion(id="c2", text="States the accuracy cost of each family"),
-        Criterion(id="c3", text="Addresses effect on long-context recall"),
-        Criterion(id="c4", text="Addresses end-user latency, not just throughput"),
+    objectives = [
+        Objective(id="o1", text="Names the main families of KV-cache reduction techniques"),
+        Objective(id="o2", text="States the accuracy cost of each family"),
+        Objective(id="o3", text="Addresses effect on long-context recall"),
+        Objective(id="o4", text="Addresses end-user latency, not just throughput"),
     ]
     caps = Caps(max_depth=4, branching=3, node_budget=25)
+    spec = Instruction(id="i_spec", kind="spec", created_at=T0,
+                       text="Focus on methods that need no retraining. [fixture spec]")
     run = Run(
-        id=RUN_ID, question=QUESTION, checklist=[], people=["alice", "bob"],
-        primary_person="alice", mode="pruned", status="running", caps=caps, created_at=T0,
+        id=RUN_ID, question=QUESTION, objectives=[], instructions=[spec], people=["alice", "bob"],
+        primary_person="alice", vault_people=["alice"], mode="pruned", status="running",
+        caps=caps, created_at=T0,
     )
 
     def node(id: str, parent: str | None, depth: int, type: str, description: str,
@@ -147,23 +151,23 @@ def _build() -> dict[str, Any]:
     ev = _Emitter()
     ev.emit(RunStarted, 0, run=run)
     ev.emit(NodeCreated, 1, node=root)
-    ev.emit(ChecklistReady, 2, checklist=checklist)
-    run = run.model_copy(update={"checklist": checklist})
-    ev.emit(Activity, 3, message="Planning: wrote a 4-item checklist for the question.")
+    ev.emit(ObjectivesUpdated, 2, objectives=objectives)
+    run = run.model_copy(update={"objectives": objectives})
+    ev.emit(Activity, 3, message="Planning: wrote a 4-item objectives for the question.")
 
-    # Three candidates proposed; two pass pre-scoring, one is pruned citing alice's own note.
+    # Three candidates proposed; two pass pre-scoring, one is parked citing alice's own note.
     for n in (kv, quant, spec):
         ev.emit(NodeCreated, 4, node=n)
     ev.emit(VaultRetrieved, 5, node_id="n_spec", person="alice",
             query="history of speculative decoding", item_ids=["v_a2"], similarities=[0.81])
     spec_decision = Decision(
-        verdict="prune", stage="pre", vault_items_used=["v_a2"],
+        verdict="park", stage="pre", vault_items_used=["v_a2"],
         reason="Your note 'Speculative decoding is well understood' already covers this.")
     spec = spec.model_copy(deep=True, update={
-        "status": "pruned", "decision": spec_decision, "decided_by": "agent",
+        "status": "parked", "decision": spec_decision, "decided_by": "agent",
         "tokens": TokenUsage(agent=0, scorer=410),
         "person_scores": {
-            "alice": PersonScore(person="alice", verdict="prune", score=0.37,
+            "alice": PersonScore(person="alice", verdict="park", score=0.37,
                                  reason="Already covered by your own note.",
                                  vault_items_used=["v_a2"]),
             "bob": PersonScore(person="bob", verdict="keep", score=0.78,
@@ -171,9 +175,9 @@ def _build() -> dict[str, Any]:
                                vault_items_used=["v_b2"]),
         },
     })
-    ev.emit(NodeUpdated, 5, node=spec, change="pruned")
+    ev.emit(NodeUpdated, 5, node=spec, change="parked")
     ev.emit(Activity, 6, node_id="n_spec",
-            message="Pruned 'speculative decoding history': you already have a note on it.")
+            message="Parked 'speculative decoding history': you already have a note on it.")
 
     # Run the two survivors.
     kv = kv.model_copy(deep=True, update={"status": "running"})
@@ -181,36 +185,36 @@ def _build() -> dict[str, Any]:
     ev.emit(VaultRetrieved, 8, node_id="n_kv", person="alice",
             query="KV-cache compression", item_ids=["v_a1", "v_a3"], similarities=[0.88, 0.74])
     kv = kv.model_copy(deep=True, update={
-        "status": "done", "post_score": 0.82, "criteria_progress": ["c1", "c2"],
+        "status": "done", "post_score": 0.82, "criteria_progress": ["o1", "o2"],
         "result": "Three families: eviction, quantization, merging. Accuracy cost varies.",
         "decision": Decision(verdict="keep", stage="post", vault_items_used=["v_a1"],
-                             reason="Advances the technique-families and accuracy-cost criteria."),
+                             reason="Advances the technique-families and accuracy-cost objectives."),
         "decided_by": "agent", "tokens": TokenUsage(agent=1800, scorer=520),
     })
     ev.emit(NodeUpdated, 10, node=kv, change="done")
     quant = quant.model_copy(deep=True, update={
-        "status": "done", "post_score": 0.66, "criteria_progress": ["c3"],
+        "status": "done", "post_score": 0.66, "criteria_progress": ["o3"],
         "result": "Recall holds at 8-bit; degrades on retrieval-heavy prompts at 4-bit.",
         "decision": Decision(verdict="keep", stage="post", vault_items_used=["v_a3"],
-                             reason="Advances the long-context recall criterion."),
+                             reason="Advances the long-context recall objective."),
         "decided_by": "agent", "tokens": TokenUsage(agent=1500, scorer=480),
     })
     ev.emit(NodeUpdated, 12, node=quant, change="done")
 
-    # A child that advances nothing is pruned after running.
+    # A child that advances nothing is parked after running.
     ev.emit(NodeCreated, 14, node=prompt)
     prompt = prompt.model_copy(deep=True, update={
-        "status": "pruned", "post_score": 0.2, "criteria_progress": [],
-        "result": "Compression helps cost but says nothing about the checklist items.",
-        "decision": Decision(verdict="prune", stage="post", vault_items_used=[],
-                             reason="Advances none of the four criteria."),
+        "status": "parked", "post_score": 0.2, "criteria_progress": [],
+        "result": "Compression helps cost but says nothing about the objectives items.",
+        "decision": Decision(verdict="park", stage="post", vault_items_used=[],
+                             reason="Advances none of the four objectives."),
         "decided_by": "agent", "tokens": TokenUsage(agent=1400, scorer=450),
     })
-    ev.emit(NodeUpdated, 18, node=prompt, change="pruned")
+    ev.emit(NodeUpdated, 18, node=prompt, change="parked")
     ev.emit(Activity, 18, node_id="n_prompt",
-            message="Pruned 'prompt compression test': it advanced no checklist item.")
+            message="Parked 'prompt compression test': it advanced no objectives item.")
 
-    # Human restores the pruned branch; the agent finds something useful there.
+    # Human restores the parked branch; the agent finds something useful there.
     spec = spec.model_copy(deep=True, update={
         "status": "pending", "decided_by": "human",
         "decision": Decision(verdict="keep", stage="human", vault_items_used=["v_b2"],
@@ -220,7 +224,7 @@ def _build() -> dict[str, Any]:
     correction = VaultItemView(
         id="v_c1", person="alice", kind="correction",
         title="[fixture] Correction: latency framing is worth a look",
-        summary="I restored a pruned speculative-decoding branch; the latency angle was new.",
+        summary="I restored a parked speculative-decoding branch; the latency angle was new.",
         tags=["speculative-decoding", "latency"], retrieval_count=0, created_at=T0 + 31,
         source_text="Human override: restore n_spec.")
     ev.emit(VaultItemAdded, 31, item=correction, edges=[
@@ -233,25 +237,26 @@ def _build() -> dict[str, Any]:
     spec = spec.model_copy(deep=True, update={"status": "running"})
     ev.emit(NodeUpdated, 32, node=spec, change="running")
     spec = spec.model_copy(deep=True, update={
-        "status": "done", "post_score": 0.74, "criteria_progress": ["c4"],
+        "status": "done", "post_score": 0.74, "criteria_progress": ["o4"],
         "result": "Speculative decoding cuts perceived latency, which matters most to end users.",
         "usefulness_count": 1, "tokens": TokenUsage(agent=1600, scorer=410 + 470),
     })
     ev.emit(NodeUpdated, 40, node=spec, change="done")
     ev.emit(Activity, 40, node_id="n_spec",
-            message="Restored branch advanced the end-user latency criterion.")
+            message="Restored branch advanced the end-user latency objective.")
 
     question = Question(
         id="q_fixture", run_id=RUN_ID, node_id="n_spec", person="bob", created_at=T0 + 41,
-        text="Alice pruned this and then restored it. Is the latency framing worth including?")
+        text="Alice parked this and then restored it. Is the latency framing worth including?")
     ev.emit(QuestionAsked, 41, question=question)
 
     nodes = [root, kv, quant, spec, prompt]
     final = run.model_copy(deep=True, update={
-        "status": "done", "final_answer": "Placeholder final answer synthesized from kept branches.",
+        "status": "done",
+        "final_answer": "Placeholder final answer synthesized from kept branches.",
         "totals": RunTotals(
             tokens=TokenUsage(agent=6300, scorer=2330), nodes_total=len(nodes),
-            nodes_pruned=1, nodes_restored=1, elapsed_s=94.2),
+            nodes_parked=1, nodes_restored=1, elapsed_s=94.2),
     })
     ev.emit(RunCompleted, 94, run=final)
 

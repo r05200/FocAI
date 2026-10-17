@@ -4,8 +4,9 @@ Interactive docs for every route are served at /docs."""
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from ..config import get_config
-from . import nodes, questions, replays, runs, vault
+from pruner.core.config import get_config
+
+from . import directives, nodes, questions, replays, runs, vault
 
 
 def create_app() -> FastAPI:
@@ -23,7 +24,7 @@ def create_app() -> FastAPI:
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    for module in (runs, nodes, questions, vault, replays):
+    for module in (runs, nodes, questions, vault, directives, replays):
         api.include_router(module.router)
     app.include_router(api)
     return app

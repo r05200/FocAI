@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from pruner.api.app import app
 from pruner.api.deps import get_vault_store
-from pruner.llm import LLMError
+from pruner.core.llm import LLMError
 
 client = TestClient(app)
 
@@ -14,16 +14,21 @@ EXPECTED_ROUTES = {
     ("POST", "/api/runs"),
     ("GET", "/api/runs"),
     ("GET", "/api/runs/{run_id}"),
+    ("POST", "/api/runs/{run_id}/instructions"),
     ("GET", "/api/runs/{run_id}/events"),
     ("POST", "/api/runs/{run_id}/nodes/{node_id}/keep"),
-    ("POST", "/api/runs/{run_id}/nodes/{node_id}/prune"),
+    ("POST", "/api/runs/{run_id}/nodes/{node_id}/park"),
     ("POST", "/api/runs/{run_id}/nodes/{node_id}/restore"),
     ("GET", "/api/runs/{run_id}/questions"),
     ("POST", "/api/runs/{run_id}/questions/{question_id}/answer"),
     ("GET", "/api/vault/people"),
+    ("POST", "/api/vault/vaults"),
     ("GET", "/api/vault/graph"),
     ("GET", "/api/vault/items/{item_id}"),
     ("POST", "/api/vault/items"),
+    ("GET", "/api/vault/directives"),
+    ("POST", "/api/vault/directives"),
+    ("DELETE", "/api/vault/directives/{directive_id}"),
     ("GET", "/api/replays"),
     ("GET", "/api/replays/{name}/events"),
 }
@@ -42,8 +47,6 @@ def test_health_is_live():
 @pytest.mark.parametrize(
     ("method", "path", "body"),
     [
-        ("GET", "/api/runs", None),
-        ("GET", "/api/runs/r1", None),
         ("GET", "/api/runs/r1/events", None),
         ("POST", "/api/runs/r1/nodes/n1/restore", None),
         ("POST", "/api/runs", {"question": "q", "primary_person": "alice"}),
@@ -60,7 +63,8 @@ def test_unbuilt_routes_return_501(method, path, body):
 def test_request_bodies_are_validated_before_the_stub_runs():
     assert client.post("/api/runs", json={"question": "q"}).status_code == 422
     assert client.post("/api/vault/items", json={"person": "alice"}).status_code == 422
-    assert client.post("/api/vault/items", json={"person": "Al ice", "text": "x"}).status_code == 422
+    bad = {"person": "Al ice", "text": "x"}
+    assert client.post("/api/vault/items", json=bad).status_code == 422
     assert client.post("/api/vault/items", json={"person": "alice", "text": ""}).status_code == 422
     assert client.post("/api/runs/r1/questions/q1/answer", json={}).status_code == 422
     assert client.get("/api/replays/demo/events?speed=0").status_code == 422
@@ -106,3 +110,11 @@ def test_vault_ingest_llm_failure_is_502(vault_client, fake_llm, monkeypatch):
     monkeypatch.setattr(fake_llm, "generate", boom)
     resp = vault_client.post("/api/vault/items", json={"person": "alice", "text": "x"})
     assert resp.status_code == 502 and "quota" in resp.json()["detail"]
+
+
+def test_create_vault_route(vault_client):
+    made = vault_client.post("/api/vault/vaults", json={"person": "carol"})
+    assert made.status_code == 201 and made.json() == {"person": "carol", "item_count": 0}
+    assert vault_client.get("/api/vault/people").json() == ["carol"]
+    assert vault_client.post("/api/vault/vaults", json={"person": "carol"}).status_code == 409
+    assert vault_client.post("/api/vault/vaults", json={"person": "_edges"}).status_code == 422

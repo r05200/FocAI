@@ -2,8 +2,8 @@
 
 from fastapi import APIRouter
 
-from ..models import AnswerRequest, Question
-from .common import not_implemented
+from pruner.api.common import not_implemented
+from pruner.core.models import AnswerRequest, Question
 
 router = APIRouter(prefix="/runs/{run_id}/questions", tags=["questions"])
 

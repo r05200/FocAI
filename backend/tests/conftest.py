@@ -2,8 +2,8 @@ import dataclasses
 
 import pytest
 
-from pruner.config import get_config
-from pruner.vault import VaultStore
+from pruner.core.config import get_config
+from pruner.vault.store import VaultStore
 from tests.fakes import DIM, FakeLLM
 
 
@@ -13,6 +13,8 @@ def cfg(tmp_path):
         get_config(),
         data_dir=tmp_path, cache_dir=tmp_path / "cache", vault_dir=tmp_path / "vaults",
         embedding_dim=DIM, link_threshold=0.3, neighbors_per_item=3,
+        # Scoring thresholds pinned here (1 to 10 scale), so tests never depend on the environment.
+        pre_score_min=2.0, run_score_min=6.0, post_score_min=4.0, rescore_park_below=4.0,
     )
 
 

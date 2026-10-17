@@ -21,7 +21,7 @@ from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from .config import Config, get_config
+from pruner.core.config import Config, get_config
 
 log = logging.getLogger(__name__)
 
@@ -130,9 +130,9 @@ class LLM:
         tokens = TokenCount()
         contents = prompt
         last_error: Exception | None = None
-        for _ in range(2):  # one corrective retry on invalid output
-            from google.genai import types
+        from google.genai import types
 
+        for _ in range(2):  # one corrective retry on invalid output
             resp = await self._call_api(
                 self.client.aio.models.generate_content,
                 model=model,

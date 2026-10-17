@@ -1,0 +1,113 @@
+@import 'tailwindcss';
+
+/* Theme tokens. Dark by default; overridden for light below. Tailwind utilities read these
+   (bg-bg, text-muted, border-line, ...); the canvas vault graph reads them via getComputedStyle,
+   so `static` keeps every variable emitted even when no utility uses it. */
+@theme static {
+  --color-bg: #212121;
+  --color-sidebar: #171717;
+  --color-elev: #2f2f2f;
+  --color-hover: #3a3a3a;
+  --color-line: #3d3d3d;
+  --color-fg: #ececec;
+  --color-muted: #9b9b9b;
+  --color-accent: #ececec;
+  --color-accent-fg: #171717;
+
+  --color-kind-paper: #60a5fa;
+  --color-kind-note: #fbbf24;
+  --color-kind-question: #a78bfa;
+  --color-kind-correction: #f87171;
+  --color-kind-learned: #34d399;
+  --color-kind-directive: #f472b6;
+
+  --color-rel-contradicts: #f87171;
+  --color-rel-supports: #34d399;
+  --color-rel-agrees: #2dd4bf;
+  --color-rel-investigate: #fbbf24;
+
+  /* One colour per team member, assigned by their position in the sorted people list. */
+  --color-person-0: #60a5fa;
+  --color-person-1: #c084fc;
+  --color-person-2: #f472b6;
+  --color-person-3: #fb923c;
+  --color-person-4: #22d3ee;
+  --color-person-5: #a3e635;
+  --color-person-6: #e879f9;
+  --color-person-7: #facc15;
+  --color-person-8: #f87171;
+  --color-person-9: #2dd4bf;
+  --color-person-10: #818cf8;
+  --color-person-11: #4ade80;
+  --color-person-12: #38bdf8;
+  --color-person-13: #fb7185;
+  --color-person-14: #fdba74;
+  --color-person-15: #a8a29e;
+
+  --ease-zoom: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+:root {
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --color-bg: #ffffff;
+    --color-sidebar: #f9f9f9;
+    --color-elev: #f4f4f4;
+    --color-hover: #ececec;
+    --color-line: #e3e3e3;
+    --color-fg: #0d0d0d;
+    --color-muted: #6b6b6b;
+    --color-accent: #0d0d0d;
+    --color-accent-fg: #ffffff;
+
+    --color-kind-paper: #2563eb;
+    --color-kind-note: #d97706;
+    --color-kind-question: #7c3aed;
+    --color-kind-correction: #dc2626;
+    --color-kind-learned: #059669;
+    --color-kind-directive: #db2777;
+
+    --color-rel-contradicts: #dc2626;
+    --color-rel-supports: #059669;
+    --color-rel-agrees: #0d9488;
+    --color-rel-investigate: #d97706;
+
+    --color-person-0: #2563eb;
+    --color-person-1: #9333ea;
+    --color-person-2: #db2777;
+    --color-person-3: #ea580c;
+    --color-person-4: #0891b2;
+    --color-person-5: #65a30d;
+    --color-person-6: #c026d3;
+    --color-person-7: #ca8a04;
+    --color-person-8: #dc2626;
+    --color-person-9: #0d9488;
+    --color-person-10: #4f46e5;
+    --color-person-11: #16a34a;
+    --color-person-12: #0284c7;
+    --color-person-13: #e11d48;
+    --color-person-14: #92400e;
+    --color-person-15: #57534e;
+  }
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-bg text-fg antialiased;
+    font-family: ui-sans-serif, -apple-system, system-ui, 'Segoe UI', Helvetica, Arial, sans-serif;
+  }
+
+  button:not(:disabled) {
+    cursor: pointer;
+  }
+}

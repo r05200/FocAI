@@ -16,7 +16,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 load_dotenv(REPO_ROOT / ".env")
 
@@ -50,10 +50,11 @@ class Config:
     node_budget: int
 
     # --- Scoring thresholds (all 0..1, to be tuned on the demo question) ---
-    pre_score_min: float  # candidates scoring below this are dropped before running
-    post_score_min: float  # results scoring below this (and advancing no criterion) are pruned
-    borderline_low: float  # scores in [low, high] trigger an ask-the-human question (P1)
-    borderline_high: float
+    # All scoring thresholds are on the judges' 1 to 10 scale.
+    pre_score_min: float  # candidates with an overall score below this are parked
+    run_score_min: float  # at or above this a candidate runs; between the two is borderline
+    post_score_min: float  # results scoring below this (and advancing no objective) are parked
+    rescore_park_below: float  # after an amended question, only scores below this stay parked
 
     # --- Vault ---
     similarity_threshold: float  # below this, vault search returns nothing
@@ -89,10 +90,10 @@ def get_config() -> Config:
         max_depth=_env_int("MAX_DEPTH", 4),
         branching=_env_int("BRANCHING", 3),
         node_budget=_env_int("NODE_BUDGET", 25),
-        pre_score_min=_env_float("PRE_SCORE_MIN", 0.4),
-        post_score_min=_env_float("POST_SCORE_MIN", 0.4),
-        borderline_low=_env_float("BORDERLINE_LOW", 0.4),
-        borderline_high=_env_float("BORDERLINE_HIGH", 0.6),
+        pre_score_min=_env_float("PRE_SCORE_MIN", 2.0),
+        run_score_min=_env_float("RUN_SCORE_MIN", 6.0),
+        post_score_min=_env_float("POST_SCORE_MIN", 4.0),
+        rescore_park_below=_env_float("RESCORE_PARK_BELOW", 4.0),
         similarity_threshold=_env_float("SIMILARITY_THRESHOLD", 0.6),
         search_top_k=_env_int("SEARCH_TOP_K", 5),
         neighbors_per_item=_env_int("NEIGHBORS_PER_ITEM", 3),

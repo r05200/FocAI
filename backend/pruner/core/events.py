@@ -12,7 +12,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter
 
-from .models import Criterion, Node, Question, Run, VaultEdge, VaultItemView
+from pruner.core.models import Instruction, Node, Objective, Question, Run, VaultEdge, VaultItemView
 
 
 class EventBase(BaseModel):
@@ -26,9 +26,12 @@ class RunStarted(EventBase):
     run: Run
 
 
-class ChecklistReady(EventBase):
-    type: Literal["checklist_ready"] = "checklist_ready"
-    checklist: list[Criterion]
+class ObjectivesUpdated(EventBase):
+    """The run's objectives, in full: sent when they are first written and again whenever an
+    instruction appends more."""
+
+    type: Literal["objectives_updated"] = "objectives_updated"
+    objectives: list[Objective]
 
 
 class NodeCreated(EventBase):
@@ -36,13 +39,20 @@ class NodeCreated(EventBase):
     node: Node
 
 
-NodeChange = Literal["running", "scored", "done", "pruned", "kept", "restored", "failed"]
+NodeChange = Literal["running", "scored", "done", "parked", "kept", "restored", "failed"]
 
 
 class NodeUpdated(EventBase):
     type: Literal["node_updated"] = "node_updated"
     node: Node
     change: NodeChange  # what happened, so the UI can animate it; node holds the new state
+
+
+class InstructionAdded(EventBase):
+    """The user appended an instruction; it applies to everything the agent does from now on."""
+
+    type: Literal["instruction_added"] = "instruction_added"
+    instruction: Instruction
 
 
 class VaultRetrieved(EventBase):
@@ -94,9 +104,10 @@ class RunFailed(EventBase):
 
 Event = Annotated[
     RunStarted
-    | ChecklistReady
+    | ObjectivesUpdated
     | NodeCreated
     | NodeUpdated
+    | InstructionAdded
     | VaultRetrieved
     | VaultItemAdded
     | Activity

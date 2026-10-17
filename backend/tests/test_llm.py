@@ -1,7 +1,7 @@
 import pytest
 from pydantic import BaseModel
 
-from pruner.llm import LLM, LLMError
+from pruner.core.llm import LLM, LLMError
 from tests.fakes import FakeGenaiClient
 
 

@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Query
 
-from .common import SSE_RESPONSES, not_implemented
+from pruner.api.common import SSE_RESPONSES, not_implemented
 
 router = APIRouter(prefix="/replays", tags=["replays"])
 

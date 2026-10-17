@@ -1,16 +1,25 @@
-// Mirrors backend/pruner/models.py and backend/pruner/events.py. Keep in sync by hand;
+// Mirrors backend/pruner/core/models.py and backend/pruner/core/events.py. Keep in sync by hand;
 // the fixtures in ./fixtures are generated from the backend models and validated in CI-style
 // tests (backend/tests), so a drift shows up there first.
 
-export type VaultKind = 'paper' | 'note' | 'question' | 'correction' | 'learned'
-export type VaultRelation = 'contradicts' | 'supports' | 'agrees'
+export type VaultKind =
+  | 'paper'
+  | 'note'
+  | 'question'
+  | 'correction'
+  | 'learned'
+  | 'directive'
+export type VaultRelation = 'contradicts' | 'supports' | 'agrees' | 'investigate'
 export type NodeType = 'hypothesis' | 'experiment' | 'reading'
-export type NodeStatus = 'pending' | 'running' | 'done' | 'pruned' | 'failed'
-export type Verdict = 'keep' | 'prune'
+export type NodeStatus = 'pending' | 'running' | 'done' | 'parked' | 'failed'
+export type Verdict = 'keep' | 'park'
 export type DecisionStage = 'pre' | 'post' | 'human'
 export type Decider = 'agent' | 'human'
 export type RunMode = 'pruned' | 'unpruned'
 export type RunStatus = 'running' | 'done' | 'failed'
+
+// Backend PERSON_PATTERN: a person's name doubles as a filename, so no leading "_" (reserved).
+export const PERSON_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/
 
 // ---- vault
 
@@ -22,6 +31,7 @@ export interface VaultItemView {
   summary: string
   tags: string[]
   source_text: string
+  investigate: boolean
   retrieval_count: number
   created_at: number
 }
@@ -40,11 +50,23 @@ export interface VaultGraph {
   edges: VaultEdge[]
 }
 
+// A person's standing instruction (e.g. "prefer optimizer changes"). Not a vault item: no
+// embedding or links; kept in its own list and handed to the agent as-is.
+export interface Directive {
+  id: string
+  person: string
+  text: string
+  created_at: number
+}
+
 // ---- scoring
 
-export interface Criterion {
-  id: string
+// One point-form goal of the research, written from the spec when the run starts. Later
+// instructions can append more; nothing is rewritten or removed.
+export interface Objective {
+  id: string // "o1", "o2", ...
   text: string
+  source: string // "spec", or the id of the instruction that added it
 }
 
 export interface PreScore {
@@ -90,7 +112,7 @@ export interface TreeNode {
   decision: Decision | null
   decided_by: Decider | null
   result: string | null
-  criteria_progress: string[]
+  criteria_progress: string[] // ids of the objectives this node advanced
   tokens: TokenUsage
   usefulness_count: number
   person_scores: Record<string, PersonScore>
@@ -106,17 +128,29 @@ export interface Caps {
 export interface RunTotals {
   tokens: TokenUsage
   nodes_total: number
-  nodes_pruned: number
+  nodes_parked: number
   nodes_restored: number
   elapsed_s: number
+}
+
+export type InstructionKind = 'spec' | 'steer'
+
+export interface Instruction {
+  id: string
+  kind: InstructionKind
+  text: string
+  created_at: number
 }
 
 export interface Run {
   id: string
   question: string
-  checklist: Criterion[]
+  objectives: Objective[]
+  instructions: Instruction[] // spec first, then steering
+  directives: string[] // directive texts last sent for this run, appended to every prompt
   people: string[]
-  primary_person: string
+  primary_person: string // whose vault drives pruning
+  vault_people: string[] // whose vaults the scorers search
   mode: RunMode
   status: RunStatus
   caps: Caps
@@ -155,16 +189,44 @@ export interface RunSnapshot {
 
 export interface StartRunRequest {
   question: string
+  spec?: string
   mode?: RunMode
   primary_person: string
   people?: string[] | null
+  // Whose vaults the scorers search; defaults to [primary_person], [] = no vault.
+  vault_people?: string[] | null
+  // Directive texts (not ids), appended to the prompts as-is.
+  directives?: string[]
+}
+
+export interface InstructionRequest {
+  text: string
+  // The full list of active directive texts, replacing the run's previous list. Omit to keep it.
+  directives?: string[] | null
 }
 
 export interface IngestRequest {
   person: string
-  kind?: VaultKind
+  kind?: Exclude<VaultKind, 'directive'> // directives use DirectiveRequest instead
   text: string
   title?: string | null
+}
+
+// POST /api/vault/vaults: create an empty vault so the person shows up before any item exists.
+// 201 -> VaultSummary; 409 if that person already has a vault.
+export interface CreateVaultRequest {
+  person: string
+}
+
+export interface VaultSummary {
+  person: string
+  item_count: number
+}
+
+// POST /api/vault/directives -> Directive
+export interface DirectiveRequest {
+  person: string
+  text: string
 }
 
 export interface IngestResult {
@@ -184,13 +246,15 @@ interface EventBase {
   ts: number
 }
 
-export type NodeChange = 'running' | 'scored' | 'done' | 'pruned' | 'kept' | 'restored' | 'failed'
+export type NodeChange = 'running' | 'scored' | 'done' | 'parked' | 'kept' | 'restored' | 'failed'
 
 export type PrunerEvent =
   | (EventBase & { type: 'run_started'; run: Run })
-  | (EventBase & { type: 'checklist_ready'; checklist: Criterion[] })
+  // The run's objectives in full: when first written, and again whenever an instruction adds more.
+  | (EventBase & { type: 'objectives_updated'; objectives: Objective[] })
   | (EventBase & { type: 'node_created'; node: TreeNode })
   | (EventBase & { type: 'node_updated'; node: TreeNode; change: NodeChange })
+  | (EventBase & { type: 'instruction_added'; instruction: Instruction })
   | (EventBase & {
       type: 'vault_retrieved'
       node_id: string | null

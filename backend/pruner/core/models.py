@@ -12,25 +12,33 @@ import time
 import uuid
 from typing import Literal
 
-from pydantic import BaseModel, Field, computed_field
+from pydantic import BaseModel, Field, computed_field, field_validator
 
-VaultKind = Literal["paper", "note", "question", "correction", "learned"]
+# "directive" is in the palette so every client shares one set of kinds (the frontend colors by it),
+# but directives are not vault items: they have their own class and routes (see Directive), and
+# IngestRequest rejects this kind.
+VaultKind = Literal["paper", "note", "question", "correction", "learned", "directive"]
 # How a newly ingested item relates to one of its nearest neighbors, as judged by the vault LLM.
 # supports = gives evidence for the other's claim; agrees = reaches the same view independently;
-# contradicts = the claims conflict. The LLM may also answer "unrelated" (similar wording or topic,
-# no bearing); such pairs are not stored as edges, so VaultEdge.relation never has that value.
-VaultRelation = Literal["contradicts", "supports", "agrees"]
-VaultJudgement = Literal["contradicts", "supports", "agrees", "unrelated"]
-PERSON_PATTERN = r"^[a-z0-9_-]{1,32}$"  # also used as a filename
+# contradicts = the claims conflict; investigate = one side is a question the user wants answered
+# and the other is material relevant to it that does not settle it yet. The LLM may also answer
+# "unrelated" (similar wording or topic, no bearing); such pairs are not stored as edges, so
+# VaultEdge.relation never has that value.
+VaultRelation = Literal["contradicts", "supports", "agrees", "investigate"]
+VaultJudgement = Literal["contradicts", "supports", "agrees", "investigate", "unrelated"]
+PERSON_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,31}$"  # also a filename; no leading "_" (reserved files)
 NodeType = Literal["hypothesis", "experiment", "reading"]
-# pending = proposed and passed pre-scoring, waiting to run; pruned covers both pre- and
-# post-scoring prunes (see Decision.stage).
-NodeStatus = Literal["pending", "running", "done", "pruned", "failed"]
-Verdict = Literal["keep", "prune"]
+# pending = proposed and passed pre-scoring, waiting to run; parked covers both pre- and
+# post-scoring parks (see Decision.stage).
+NodeStatus = Literal["pending", "running", "done", "parked", "failed"]
+Verdict = Literal["keep", "park"]
 DecisionStage = Literal["pre", "post", "human"]
 Decider = Literal["agent", "human"]
 RunMode = Literal["pruned", "unpruned"]
 RunStatus = Literal["running", "done", "failed"]
+# spec = the research specs the user gives at the start; steer = a later instruction that
+# is appended to it. All of them are shown to the agent and the scorers, oldest first.
+InstructionKind = Literal["spec", "steer"]
 
 
 def new_id(prefix: str) -> str:
@@ -50,6 +58,9 @@ class VaultItemView(BaseModel):
     summary: str
     tags: list[str] = Field(default_factory=list)
     source_text: str = ""
+    # Something to look into ("investigate this", "look into", "maybe this could help"), as
+    # judged by the ingest LLM. Questions count too, whatever this says.
+    investigate: bool = False
     retrieval_count: int = 0
     created_at: float = Field(default_factory=time.time)
 
@@ -79,9 +90,13 @@ class VaultGraph(BaseModel):
 # --------------------------------------------------------------------------- scoring
 
 
-class Criterion(BaseModel):
-    id: str  # "c1", "c2", ...
+class Objective(BaseModel):
+    """One point-form goal of the research. Written by an LLM from the spec when the run
+    starts; every later instruction can append more (nothing is ever rewritten or removed)."""
+
+    id: str  # "o1", "o2", ...
     text: str
+    source: str = "spec"  # "spec", or the id of the instruction that added it
 
 
 class PreScore(BaseModel):
@@ -140,7 +155,7 @@ class Node(BaseModel):
     decision: Decision | None = None
     decided_by: Decider | None = None
     result: str | None = None  # what running the node produced
-    criteria_progress: list[str] = Field(default_factory=list)  # criterion ids advanced
+    criteria_progress: list[str] = Field(default_factory=list)  # ids of the objectives advanced
     tokens: TokenUsage = Field(default_factory=TokenUsage)
     usefulness_count: int = 0  # times a later node or the final answer used this one
     person_scores: dict[str, PersonScore] = Field(default_factory=dict)  # P1
@@ -156,17 +171,30 @@ class Caps(BaseModel):
 class RunTotals(BaseModel):
     tokens: TokenUsage = Field(default_factory=TokenUsage)
     nodes_total: int = 0
-    nodes_pruned: int = 0
+    nodes_parked: int = 0
     nodes_restored: int = 0
     elapsed_s: float = 0.0
+
+
+class Instruction(BaseModel):
+    """A prompt typed in the frontend: first the research spec, then steering that builds on it."""
+
+    id: str = Field(default_factory=lambda: new_id("i"))
+    kind: InstructionKind
+    text: str
+    created_at: float = Field(default_factory=time.time)
 
 
 class Run(BaseModel):
     id: str = Field(default_factory=lambda: new_id("r"))
     question: str
-    checklist: list[Criterion] = Field(default_factory=list)
+    objectives: list[Objective] = Field(default_factory=list)
+    instructions: list[Instruction] = Field(default_factory=list)  # spec first, then steering
+    # The directive texts the frontend last sent for this run, appended to every prompt.
+    directives: list[str] = Field(default_factory=list)
     people: list[str]
     primary_person: str  # whose vault drives pruning
+    vault_people: list[str] = Field(default_factory=list)  # whose vaults the scorers search
     mode: RunMode = "pruned"
     status: RunStatus = "running"
     caps: Caps
@@ -176,13 +204,24 @@ class Run(BaseModel):
 
 
 class DeadEnd(BaseModel):
-    """A short note about a pruned or failed branch, injected into later prompts."""
+    """A short note about a parked or failed branch, injected into later prompts."""
 
     id: str = Field(default_factory=lambda: new_id("d"))
     run_id: str
     node_id: str
     description: str
     reason: str
+
+
+class Directive(BaseModel):
+    """A standing instruction a person files under the vault's Directives tab (for example
+    "prefer optimizer changes"). Not a vault item: no embedding, no links, no LLM ranking.
+    It is stored separately and handed to the agent and scorers as-is."""
+
+    id: str = Field(default_factory=lambda: new_id("dir"))
+    person: str
+    text: str
+    created_at: float = Field(default_factory=time.time)
 
 
 class Question(BaseModel):
@@ -212,9 +251,24 @@ class RunSnapshot(BaseModel):
 
 class StartRunRequest(BaseModel):
     question: str
+    spec: str = ""  # the research specs; stored as the run's first instruction (kind "spec")
     mode: RunMode = "pruned"
     primary_person: str
     people: list[str] | None = None  # defaults to [primary_person]
+    # Whose vaults the pre- and post-scorers search, e.g. just you, or you plus a teammate.
+    # Defaults to [primary_person]; an empty list scores with no vault at all.
+    vault_people: list[str] | None = None
+    # The person's active directives (their texts), sent along with the spec. They are appended
+    # to the prompts as-is.
+    directives: list[str] = Field(default_factory=list)
+
+
+class InstructionRequest(BaseModel):
+    """Further instructions typed mid-run; appended to the spec and sent to the agent."""
+
+    text: str = Field(min_length=1)
+    # The current list of active directives, replacing the run's previous list. Omit to keep it.
+    directives: list[str] | None = None
 
 
 class IngestRequest(BaseModel):
@@ -222,6 +276,27 @@ class IngestRequest(BaseModel):
     kind: VaultKind = "note"
     text: str = Field(min_length=1)
     title: str | None = None  # optional override; otherwise the ingest LLM writes one
+
+    @field_validator("kind")
+    @classmethod
+    def _not_a_directive(cls, kind: str) -> str:
+        if kind == "directive":
+            raise ValueError("directives are not vault items; use POST /api/vault/directives")
+        return kind
+
+
+class CreateVaultRequest(BaseModel):
+    person: str = Field(pattern=PERSON_PATTERN)
+
+
+class VaultSummary(BaseModel):
+    person: str
+    item_count: int
+
+
+class DirectiveRequest(BaseModel):
+    person: str = Field(pattern=PERSON_PATTERN)
+    text: str = Field(min_length=1)
 
 
 class IngestResult(BaseModel):

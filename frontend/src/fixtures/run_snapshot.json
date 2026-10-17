@@ -2,29 +2,45 @@
   "run": {
     "id": "r_fixture",
     "question": "Which techniques reduce the inference cost of long-context LLMs? (placeholder question)",
-    "checklist": [
+    "objectives": [
       {
-        "id": "c1",
-        "text": "Names the main families of KV-cache reduction techniques"
+        "id": "o1",
+        "text": "Names the main families of KV-cache reduction techniques",
+        "source": "spec"
       },
       {
-        "id": "c2",
-        "text": "States the accuracy cost of each family"
+        "id": "o2",
+        "text": "States the accuracy cost of each family",
+        "source": "spec"
       },
       {
-        "id": "c3",
-        "text": "Addresses effect on long-context recall"
+        "id": "o3",
+        "text": "Addresses effect on long-context recall",
+        "source": "spec"
       },
       {
-        "id": "c4",
-        "text": "Addresses end-user latency, not just throughput"
+        "id": "o4",
+        "text": "Addresses end-user latency, not just throughput",
+        "source": "spec"
       }
     ],
+    "instructions": [
+      {
+        "id": "i_spec",
+        "kind": "spec",
+        "text": "Focus on methods that need no retraining. [fixture spec]",
+        "created_at": 1760000000.0
+      }
+    ],
+    "directives": [],
     "people": [
       "alice",
       "bob"
     ],
     "primary_person": "alice",
+    "vault_people": [
+      "alice"
+    ],
     "mode": "pruned",
     "status": "done",
     "caps": {
@@ -40,7 +56,7 @@
         "total": 8630
       },
       "nodes_total": 5,
-      "nodes_pruned": 1,
+      "nodes_parked": 1,
       "nodes_restored": 1,
       "elapsed_s": 94.2
     },
@@ -88,7 +104,7 @@
       "decision": {
         "verdict": "keep",
         "stage": "post",
-        "reason": "Advances the technique-families and accuracy-cost criteria.",
+        "reason": "Advances the technique-families and accuracy-cost objectives.",
         "vault_items_used": [
           "v_a1"
         ]
@@ -96,8 +112,8 @@
       "decided_by": "agent",
       "result": "Three families: eviction, quantization, merging. Accuracy cost varies.",
       "criteria_progress": [
-        "c1",
-        "c2"
+        "o1",
+        "o2"
       ],
       "tokens": {
         "agent": 1800,
@@ -126,7 +142,7 @@
       "decision": {
         "verdict": "keep",
         "stage": "post",
-        "reason": "Advances the long-context recall criterion.",
+        "reason": "Advances the long-context recall objective.",
         "vault_items_used": [
           "v_a3"
         ]
@@ -134,7 +150,7 @@
       "decided_by": "agent",
       "result": "Recall holds at 8-bit; degrades on retrieval-heavy prompts at 4-bit.",
       "criteria_progress": [
-        "c3"
+        "o3"
       ],
       "tokens": {
         "agent": 1500,
@@ -171,7 +187,7 @@
       "decided_by": "human",
       "result": "Speculative decoding cuts perceived latency, which matters most to end users.",
       "criteria_progress": [
-        "c4"
+        "o4"
       ],
       "tokens": {
         "agent": 1600,
@@ -182,7 +198,7 @@
       "person_scores": {
         "alice": {
           "person": "alice",
-          "verdict": "prune",
+          "verdict": "park",
           "score": 0.37,
           "reason": "Already covered by your own note.",
           "vault_items_used": [
@@ -208,7 +224,7 @@
       "depth": 2,
       "type": "experiment",
       "description": "Test prompt compression on long documents",
-      "status": "pruned",
+      "status": "parked",
       "pre_score": {
         "plausible": 0.6,
         "relevant": 0.6,
@@ -217,13 +233,13 @@
       },
       "post_score": 0.2,
       "decision": {
-        "verdict": "prune",
+        "verdict": "park",
         "stage": "post",
-        "reason": "Advances none of the four criteria.",
+        "reason": "Advances none of the four objectives.",
         "vault_items_used": []
       },
       "decided_by": "agent",
-      "result": "Compression helps cost but says nothing about the checklist items.",
+      "result": "Compression helps cost but says nothing about the objectives items.",
       "criteria_progress": [],
       "tokens": {
         "agent": 1400,
@@ -241,7 +257,7 @@
       "run_id": "r_fixture",
       "node_id": "n_prompt",
       "description": "Test prompt compression on long documents",
-      "reason": "Advances none of the four criteria."
+      "reason": "Advances none of the four objectives."
     }
   ],
   "questions": [
@@ -250,7 +266,7 @@
       "run_id": "r_fixture",
       "node_id": "n_spec",
       "person": "bob",
-      "text": "Alice pruned this and then restored it. Is the latency framing worth including?",
+      "text": "Alice parked this and then restored it. Is the latency framing worth including?",
       "status": "pending",
       "answer": null,
       "created_at": 1760000041.0
