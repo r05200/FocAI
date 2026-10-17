@@ -4,6 +4,9 @@ Layout under cfg.runs_dir (git-ignored):
   <run_id>/events.jsonl   every event, appended as it is emitted (durable even if the run dies)
   <run_id>/snapshot.json  the full RunSnapshot, rewritten atomically by save_snapshot()
   <run_id>/forks.jsonl    fork requests from the amend agent, appended (forking is not built)
+  <run_id>/findings.jsonl the run's shared findings log (orchestrator lines and agent ones)
+  <run_id>/vault.json     the run vault: ideas and whole-branch findings (write_findings_vault)
+  <run_id>/logs/<node>.jsonl  a node's log: tool calls with their reasons, results, decisions
   <run_id>/level_start.json  the tree as it was when the current level was created (rewritten
                           whenever a level is created or completed); a reload of an unfinished
                           run goes back to it, so the nodes of the level in progress recover their
@@ -21,6 +24,7 @@ from pathlib import Path
 from pruner.core.config import Config, get_config
 from pruner.core.events import (
     Event,
+    FindingAdded,
     NodeCreated,
     NodeUpdated,
     ObjectivesUpdated,
@@ -29,16 +33,30 @@ from pruner.core.events import (
     RunCompleted,
     RunFailed,
     RunStarted,
+    RunUpdated,
     parse_event,
 )
 from pruner.core.fs import write_atomic
-from pruner.core.models import ForkRequest, Node, Question, Run, RunSnapshot
+from pruner.core.models import (
+    Finding,
+    ForkRequest,
+    LogEntry,
+    Node,
+    Question,
+    Run,
+    RunSnapshot,
+    RunVault,
+)
 
 STOPPED_BY_USER = "Stopped by the user"
 EVENTS_FILE = "events.jsonl"
 FORKS_FILE = "forks.jsonl"
 SNAPSHOT_FILE = "snapshot.json"
 LEVEL_START_FILE = "level_start.json"
+FINDINGS_FILE = "findings.jsonl"
+RUN_VAULT_FILE = "vault.json"
+LOGS_DIR = "logs"
+_NODE_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")  # node ids become log file names
 _RUN_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")  # run ids become directory names
 
 
@@ -47,9 +65,12 @@ def rebuild_snapshot(events: list[Event]) -> RunSnapshot | None:
     run: Run | None = None
     nodes: dict[str, Node] = {}
     questions: dict[str, Question] = {}
+    findings: list[Finding] = []
     for e in events:
-        if isinstance(e, (RunStarted, RunCompleted)):
+        if isinstance(e, (RunStarted, RunCompleted, RunUpdated)):
             run = e.run
+        elif isinstance(e, FindingAdded):
+            findings.append(e.finding)
         elif isinstance(e, ObjectivesUpdated) and run is not None:
             run = run.model_copy(update={"objectives": e.objectives})
         elif isinstance(e, (NodeCreated, NodeUpdated)):
@@ -58,7 +79,8 @@ def rebuild_snapshot(events: list[Event]) -> RunSnapshot | None:
             questions[e.question.id] = e.question
     if run is None:
         return None
-    return RunSnapshot(run=run, nodes=list(nodes.values()), questions=list(questions.values()))
+    return RunSnapshot(run=run, nodes=list(nodes.values()), questions=list(questions.values()),
+                       findings=findings)
 
 
 class RunStore:
@@ -98,6 +120,32 @@ class RunStore:
 
     def forks(self, run_id: str) -> list[ForkRequest]:
         return [ForkRequest.model_validate_json(line) for line in self._lines(run_id, FORKS_FILE)]
+
+    def append_log(self, run_id: str, node_id: str, entry: LogEntry) -> None:
+        """Add a line to a node's log (data/runs/<run>/logs/<node>.jsonl)."""
+        if _NODE_ID.match(node_id):
+            self._append(run_id, f"{LOGS_DIR}/{node_id}.jsonl", entry.model_dump_json())
+
+    def logs(self, run_id: str, node_id: str) -> list[LogEntry]:
+        if not _NODE_ID.match(node_id):
+            return []
+        return [LogEntry.model_validate_json(line)
+                for line in self._lines(run_id, f"{LOGS_DIR}/{node_id}.jsonl")]
+
+    def append_finding(self, finding: Finding) -> None:
+        self._append(finding.run_id, FINDINGS_FILE, finding.model_dump_json())
+
+    def findings(self, run_id: str) -> list[Finding]:
+        return [Finding.model_validate_json(line) for line in self._lines(run_id, FINDINGS_FILE)]
+
+    def run_vault(self, run_id: str) -> RunVault | None:
+        path = self._file(run_id, RUN_VAULT_FILE)
+        if path is None or not path.exists():
+            return None
+        return RunVault.model_validate_json(path.read_text())
+
+    def save_run_vault(self, vault: RunVault) -> None:
+        write_atomic(self.dir / vault.run_id / RUN_VAULT_FILE, vault.model_dump_json(indent=1))
 
     def last_seq(self, run_id: str) -> int:
         return max((e.seq for e in self.events(run_id)), default=0)

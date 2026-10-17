@@ -47,10 +47,28 @@ class Config:
     vault_model: str  # dedicated to vault ingestion and relation labelling
     temperature: float
 
-    # --- Agent caps (PRD: depth ~4, branching ~3, ~25 nodes) ---
+    # --- Agent caps (depth ~3, branching ~3, ~12-15 experiments) ---
     max_depth: int
     branching: int
-    node_budget: int
+    node_budget: int  # the most experiments one run may run, the baseline included
+
+    # --- The orchestrator's agent ---
+    agent_hypothesis_model: str  # proposing hypotheses and edits (a bad edit wastes an experiment)
+    agent_synthesis_model: str  # verdicts, findings and the next action
+    # Whether the final JSON schema is sent together with the tools ("off" = tool turns first,
+    # then a separate structured call; "on" = both in one; "auto" = try "on", fall back to "off").
+    agent_schema_with_tools: str
+    tool_calls_per_phase: int  # read tools (vault, results, files, web) per phase
+    write_tool_calls_per_phase: int  # each write tool (findings log, run vault) per phase
+    branch_finding_min_confidence: float  # 0..1; below this write_findings_vault is refused
+    agent_linked_cap: int  # notes reached only through a link that search_vault returns
+    llm_min_interval_s: float  # least time between two API calls on one key (free-tier pacing)
+
+    # --- Workspace and experiments (the user's files are edited in place) ---
+    work_dir: Path  # backups, versions and logs of each run (never the user's files)
+    experiment_timeout_s: float
+    experiment_output_cap: int  # bytes of stdout and of stderr kept (the tail)
+    code_context_chars: int  # how much file text goes into a prompt
 
     # --- Scoring thresholds (on the judges' 1 to 10 scale; tune on the demo question) ---
     pre_score_min: float  # candidates with an overall score below this are parked
@@ -106,9 +124,23 @@ def get_config() -> Config:
         embedding_dim=_env_int("EMBEDDING_DIM", 768),
         vault_model=_env("VAULT_MODEL", "gemini-3.5-flash-lite"),
         temperature=_env_float("TEMPERATURE", 0.1),
-        max_depth=_env_int("MAX_DEPTH", 4),
+        max_depth=_env_int("MAX_DEPTH", 3),
         branching=_env_int("BRANCHING", 3),
-        node_budget=_env_int("NODE_BUDGET", 25),
+        node_budget=_env_int("NODE_BUDGET", 14),
+        agent_hypothesis_model=_env("AGENT_HYPOTHESIS_MODEL", _env("STRONG_MODEL",
+                                                                   "gemini-3.5-flash")),
+        agent_synthesis_model=_env("AGENT_SYNTHESIS_MODEL", _env("FAST_MODEL",
+                                                                 "gemini-3.5-flash-lite")),
+        agent_schema_with_tools=_env("AGENT_SCHEMA_WITH_TOOLS", "off"),
+        tool_calls_per_phase=_env_int("TOOL_CALLS_PER_PHASE", 3),
+        write_tool_calls_per_phase=_env_int("WRITE_TOOL_CALLS_PER_PHASE", 1),
+        branch_finding_min_confidence=_env_float("BRANCH_FINDING_MIN_CONFIDENCE", 0.7),
+        agent_linked_cap=_env_int("AGENT_LINKED_CAP", 2),
+        llm_min_interval_s=_env_float("LLM_MIN_INTERVAL_S", 0.0),
+        work_dir=Path(_env("WORK_DIR", str(data_dir / "work"))),
+        experiment_timeout_s=_env_float("EXPERIMENT_TIMEOUT_S", 600.0),
+        experiment_output_cap=_env_int("EXPERIMENT_OUTPUT_CAP", 20_000),
+        code_context_chars=_env_int("CODE_CONTEXT_CHARS", 16_000),
         pre_score_min=_env_float("PRE_SCORE_MIN", 2.0),
         run_score_min=_env_float("RUN_SCORE_MIN", 6.0),
         post_score_min=_env_float("POST_SCORE_MIN", 4.0),

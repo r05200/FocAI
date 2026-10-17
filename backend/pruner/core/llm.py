@@ -7,6 +7,13 @@
   instant and deterministic. Cache hits still report the tokens the original call cost, so cost
   comparisons are the same whether or not the cache was warm.
 - Token usage is accumulated per `purpose` (e.g. "vault_ingest", "scorer") in self.usage.
+- run_tools(): Gemini function calling. A manual loop (so every API call still goes through
+  _call_api: retries, scope/stop): the model may call the given tools; each turn's calls are
+  answered with their results in one reply; once max_calls is used up the tools are switched off
+  (mode NONE) so the model has to answer. The model's turns are echoed back unchanged, which keeps
+  Gemini 3.x thought signatures intact. Each step is cached on disk under a key that includes the
+  whole conversation so far (tool results included), so a re-run is a chain of cache hits and
+  diverges exactly where a tool returned something different.
 - stop(): cancels calls that are in flight. Every API call runs as its own asyncio task that is
   tracked with the scope it was started in, so stopping cancels the task (and with it the HTTP
   request) and the caller gets LLMCancelled. Calls are scoped with `with llm.scope(run_id):`;
@@ -19,7 +26,9 @@ import asyncio
 import hashlib
 import json
 import logging
-from collections.abc import Iterator
+import re
+import time
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -31,7 +40,7 @@ from pydantic import BaseModel, ValidationError
 from pruner.core.config import Config, get_config
 from pruner.core.fs import write_atomic
 
-log =logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -75,6 +84,50 @@ class Generated(Generic[T]):
     cached: bool
 
 
+ToolHandler = Callable[[str, dict[str, Any]], Awaitable[str]]
+TOOL_RESULT_MAX_CHARS = 6000  # a tool's answer is cut to this before it goes back to the model
+TOOL_BUDGET_EXHAUSTED = json.dumps({"error": "tool budget exhausted; answer now"})
+
+
+@dataclass
+class ToolTranscript:
+    """What happened in a run_tools() conversation."""
+
+    final_text: str  # the text of the turn that called no tool
+    thoughts: list[str]  # thought summaries the model returned, if any
+    calls: list[tuple[str, dict[str, Any], str]]  # (tool, args, result) in order
+    tokens: TokenCount
+    api_calls: int  # calls that reached the API (cache hits excluded)
+    cached_steps: int
+
+    def evidence(self) -> str:
+        """The tool calls and their results as plain text, for a follow-up prompt."""
+        if not self.calls:
+            return "(no tools were called)"
+        return "\n\n".join(f"{name}({json.dumps(args, ensure_ascii=False)}) ->\n{result}"
+                            for name, args, result in self.calls)
+
+
+def _tokens_of(resp: Any) -> TokenCount:
+    usage = getattr(resp, "usage_metadata", None)
+    return TokenCount(
+        input=(usage.prompt_token_count or 0) if usage else 0,
+        output=((usage.candidates_token_count or 0) + (usage.thoughts_token_count or 0))
+        if usage else 0,
+        calls=1,
+    )
+
+
+def _retry_delay(error: Any, attempt: int) -> float:
+    """How long to wait before retrying: the API's own retryDelay on a 429 when it gives one
+    (capped at a minute), otherwise 1, 2, 4... seconds."""
+    details = getattr(error, "details", None) or getattr(error, "response_json", None)
+    match = re.search(r"retryDelay['\"]?\s*[:=]\s*['\"]?(\d+(?:\.\d+)?)s", str(details or ""))
+    if getattr(error, "code", None) == 429 and match:
+        return min(float(match.group(1)), 60.0)
+    return float(2**attempt)
+
+
 class DiskCache:
     def __init__(self, directory: Path) -> None:
         self.dir = directory
@@ -105,6 +158,8 @@ class LLM:
         self._inflight: dict[asyncio.Future, str | None] = {}  # running API call -> its scope
         self._stopping: set[asyncio.Future] = set()  # calls cancelled by stop(), not by a caller
         self._stopped: set[str] = set()  # scopes that were stopped
+        self._last_call = 0.0  # monotonic time of the last API call (free-tier pacing)
+        self._pace = asyncio.Lock()
 
     @contextmanager
     def scope(self, name: str) -> Iterator[None]:
@@ -146,6 +201,17 @@ class LLM:
     def _record(self, purpose: str, tokens: TokenCount) -> None:
         self.usage.setdefault(purpose, TokenCount()).add(tokens)
 
+    async def _wait_turn(self) -> None:
+        """Keep at least cfg.llm_min_interval_s between two API calls on this key."""
+        gap = self.cfg.llm_min_interval_s
+        if gap <= 0:
+            return
+        async with self._pace:
+            wait = self._last_call + gap - time.monotonic()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            self._last_call = time.monotonic()
+
     async def _call_api(self, fn: Any, **kwargs: Any) -> Any:
         from google.genai import errors
 
@@ -153,6 +219,7 @@ class LLM:
         for attempt in range(MAX_API_ATTEMPTS):
             if scope in self._stopped:
                 raise LLMCancelled(f"scope {scope!r} was stopped")
+            await self._wait_turn()
             task = asyncio.ensure_future(fn(**kwargs))
             self._inflight[task] = scope
             try:
@@ -168,7 +235,7 @@ class LLM:
                               "this keeps happening, change GEMINI_API_KEY_%s in .env.",
                               e.code, e.message, self.role.upper())
                     raise LLMError(f"Gemini API error {e.code}: {e.message}") from e
-                delay = 2**attempt
+                delay = _retry_delay(e, attempt)
                 log.warning("Gemini API error %s, retrying in %ss", e.code, delay)
                 await asyncio.sleep(delay)
             finally:
@@ -227,6 +294,78 @@ class LLM:
 
         self._record(purpose, tokens)
         raise LLMError(f"{purpose}: model output did not match {schema.__name__}: {last_error}")
+
+    async def run_tools(self, prompt: str, tools: list[dict[str, Any]], handler: ToolHandler, *,
+                        model: str, purpose: str, system: str | None = None,
+                        max_calls: int = 3, response_schema: dict[str, Any] | None = None,
+                        ) -> ToolTranscript:
+        """Let the model call `tools` (each a dict with name, description and a JSON-schema
+        `parameters`) until it answers in text. `handler(name, args)` runs a call and returns its
+        result as text; it is called at most `max_calls` times, later calls get an error. With
+        `response_schema`, the final answer is also asked for as JSON of that schema."""
+        from google.genai import types
+
+        declarations = [types.FunctionDeclaration(name=t["name"], description=t["description"],
+                                                  parameters_json_schema=t["parameters"])
+                        for t in tools]
+        contents = [types.Content(role="user", parts=[types.Part(text=prompt)])]
+        out = ToolTranscript(final_text="", thoughts=[], calls=[], tokens=TokenCount(),
+                             api_calls=0, cached_steps=0)
+        used = 0
+        for _ in range(max_calls + 2):  # every step but the last may call tools
+            mode = "NONE" if used >= max_calls else "AUTO"
+            key = DiskCache.key({
+                "kind": "tools_step", "model": model, "system": system, "mode": mode,
+                "temperature": self.cfg.temperature, "tools": tools,
+                "schema": response_schema,
+                "contents": [c.model_dump(mode="json", exclude_none=True) for c in contents],
+            })
+            if (hit := self.cache.get(key)) is not None:
+                content = types.Content.model_validate(hit["content"])
+                tokens = TokenCount.model_validate(hit["tokens"])
+                out.cached_steps += 1
+            else:
+                config = types.GenerateContentConfig(
+                    system_instruction=system, temperature=self.cfg.temperature,
+                    tools=[types.Tool(function_declarations=declarations)],
+                    automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+                    tool_config=types.ToolConfig(
+                        function_calling_config=types.FunctionCallingConfig(mode=mode)),
+                    **({"response_mime_type": "application/json",
+                        "response_json_schema": response_schema} if response_schema else {}))
+                resp = await self._call_api(self.client.aio.models.generate_content,
+                                            model=model, contents=contents, config=config)
+                if not resp.candidates or resp.candidates[0].content is None:
+                    raise LLMError(f"{purpose}: the model returned no content")
+                content = resp.candidates[0].content
+                tokens = _tokens_of(resp)
+                out.api_calls += 1
+                self.cache.set(key, {"content": content.model_dump(mode="json", exclude_none=True),
+                                     "tokens": tokens.model_dump()})
+            out.tokens.add(tokens)
+            contents.append(content)  # unchanged: keeps the thought signatures
+            parts = content.parts or []
+            out.thoughts += [p.text for p in parts if p.thought and p.text]
+            calls = [p.function_call for p in parts if p.function_call]
+            if not calls:
+                out.final_text = "".join(p.text for p in parts if p.text and not p.thought)
+                self._record(purpose, out.tokens)
+                return out
+            replies = []
+            for call in calls:
+                args = dict(call.args or {})
+                if used < max_calls:
+                    used += 1
+                    result = await handler(call.name or "", args)
+                else:
+                    result = TOOL_BUDGET_EXHAUSTED
+                out.calls.append((call.name or "", args, result))
+                replies.append(types.Part(function_response=types.FunctionResponse(
+                    id=call.id, name=call.name,
+                    response={"output": result[:TOOL_RESULT_MAX_CHARS]})))
+            contents.append(types.Content(role="user", parts=replies))
+        self._record(purpose, out.tokens)
+        raise LLMError(f"{purpose}: the model kept calling tools after they were switched off")
 
     async def embed(self, texts: list[str], *, task: str = "RETRIEVAL_DOCUMENT",
                     purpose: str = "embed") -> list[list[float]]:

@@ -8,6 +8,7 @@ Rules of thumb:
 
 from __future__ import annotations
 
+import os
 import time
 import uuid
 from typing import Literal
@@ -39,6 +40,14 @@ RunStatus = Literal["running", "done", "failed"]
 # spec = the research specs the user gives at the start; steer = a later instruction that
 # is appended to it. All of them are shown to the agent and the scorers, oldest first.
 InstructionKind = Literal["spec", "steer"]
+# The phase a node is in: proposed (hypothesis), being run (experiment), being judged (synthesis).
+NodePhase = Literal["hypothesis", "experiment", "synthesis", "complete"]
+HypothesisVerdict = Literal["supported", "refuted", "inconclusive"]
+NextAction = Literal["more_experiments", "new_hypothesis", "diagnose", "combine", "resolve",
+                     "transfer", "stop"]
+PreBand = Literal["low", "medium", "high"]  # how the UI shows a pre-score (from its zone)
+AgentPhase = Literal["hypothesis", "synthesis"]
+LogKind = Literal["thought", "tool_call", "tool_result", "decision", "activity", "error"]
 
 
 def new_id(prefix: str) -> str:
@@ -152,6 +161,98 @@ class TokenUsage(BaseModel):
         return self.agent + self.scorer
 
 
+# --------------------------------------------------------------------------- edits and results
+
+
+class FileEdit(BaseModel):
+    """One search/replace edit: `find` must occur exactly once in the file (or every occurrence is
+    replaced with replace_all)."""
+
+    path: str  # relative to the run's workspace root, posix
+    find: str
+    replace: str
+    replace_all: bool = False
+
+
+class NewFile(BaseModel):
+    path: str
+    content: str
+
+
+class DiffStats(BaseModel):
+    files: int = 0
+    added: int = 0
+    removed: int = 0
+
+
+class Edit(BaseModel):
+    """A proposed change to the user's files. The agent writes it; the orchestrator checks and
+    applies it (the agent never touches files itself)."""
+
+    edits: list[FileEdit] = Field(default_factory=list)
+    new_files: list[NewFile] = Field(default_factory=list)
+    stats: DiffStats | None = None  # computed by the workspace, not by the LLM
+
+
+class HypothesisSpec(BaseModel):
+    statement: str
+    rationale: str = ""
+    family: str = ""  # a short slug, e.g. "caching"; siblings should differ
+    planned_experiment: str = ""
+    expected_signal: str = ""
+    measures: list[str] = Field(default_factory=list)  # result keys it expects to move
+
+
+class ExperimentRun(BaseModel):
+    command: str
+    exit_code: int | None = None
+    timed_out: bool = False
+    duration_s: float = 0.0
+    stdout_tail: str = ""
+    stderr_tail: str = ""
+    result: dict | None = None  # the parsed result JSON
+    metrics: dict[str, float] = Field(default_factory=dict)  # its numeric leaves, dotted keys
+    error: str | None = None
+
+
+class Synthesis(BaseModel):
+    measured: str  # numbers and facts only
+    explanation: str  # the proposed cause, flagged as not verified
+    verdict: HypothesisVerdict
+    confidence: float = Field(default=0.5, ge=0, le=1)
+    finding: str  # one line
+    next_action: NextAction = "stop"
+    next_reason: str = ""
+    action_targets: list[str] = Field(default_factory=list)  # node ids (combine/resolve/transfer)
+    action_brief: str = ""
+
+
+class ToolCallRecord(BaseModel):
+    """One tool call the agent made, with the reason it gave for making it."""
+
+    id: str = Field(default_factory=lambda: new_id("tc"))
+    phase: AgentPhase = "hypothesis"
+    tool: str
+    args: dict = Field(default_factory=dict)
+    reason: str
+    result_preview: str = ""
+    cached: bool = False  # the same call was already made in this run; its result was reused
+    ts: float = Field(default_factory=time.time)
+
+
+class LogEntry(BaseModel):
+    """One line of a node's log (mirrors LogEntry in frontend/src/types.ts, plus `phase`)."""
+
+    id: str = Field(default_factory=lambda: new_id("log"))
+    ts: float = Field(default_factory=time.time)
+    kind: LogKind
+    title: str  # one line: "Searched the vault", "Pre-score 7.2 / 10", ...
+    text: str = ""  # the detail: the reasoning, a tool's result, the reason for a decision
+    tool: str | None = None
+    args: dict | None = None
+    phase: str | None = None
+
+
 # --------------------------------------------------------------------------- tree
 
 
@@ -172,13 +273,32 @@ class Node(BaseModel):
     tokens: TokenUsage = Field(default_factory=TokenUsage)
     usefulness_count: int = 0  # times a later node or the final answer used this one
     person_scores: dict[str, PersonScore] = Field(default_factory=dict)  # P1
+    # --- the orchestrator's fields (all optional, so older snapshots still load)
+    family: str | None = None
+    phase: NodePhase = "hypothesis"
+    summary: str = ""  # one line about this node, used when later prompts list its ancestors
+    hypothesis: HypothesisSpec | None = None
+    edit: Edit | None = None
+    base_version: str | None = None  # the code version the edit applies on
+    version: str | None = None  # this node's code version (the base plus its edit)
+    combines: list[str] = Field(default_factory=list)  # other nodes merged in (combine)
+    experiment: ExperimentRun | None = None
+    synthesis: Synthesis | None = None
+    verdict: HypothesisVerdict | None = None
+    pre_band: PreBand | None = None
+    closed: bool = False  # the agent chose "stop" here: no more children from this node
+    priority: float | None = None  # its place in the queue, recomputed by the orchestrator
+    needs_remeasure: bool = False
+    missing_metrics: list[str] = Field(default_factory=list)
+    tool_calls: dict[str, int] = Field(default_factory=dict)  # calls used, per phase
     created_at: float = Field(default_factory=time.time)
 
 
 class Caps(BaseModel):
     max_depth: int
     branching: int
-    node_budget: int
+    node_budget: int  # the most experiments the run may run, the baseline included
+    tool_calls_per_phase: int = 3
 
 
 class RunTotals(BaseModel):
@@ -198,6 +318,29 @@ class Instruction(BaseModel):
     created_at: float = Field(default_factory=time.time)
 
 
+class WorkspaceInfo(BaseModel):
+    """The user's files a run works on. They are edited in place; a backup of every editable
+    file is kept under cfg.work_dir/<run_id>/baseline so the originals can be restored."""
+
+    root: str  # absolute; the command runs here
+    editable_dirs: list[str] = Field(default_factory=list)  # relative to root ("" = all of it)
+    editable_files: list[str] = Field(default_factory=list)  # relative to root
+    files: list[str] = Field(default_factory=list)  # every editable file found at the start
+    baseline_version: str
+    applied_version: str  # the version currently written to disk
+
+
+class RunCommand(BaseModel):
+    """The command that runs one experiment. It always comes from the user: copied word for word
+    from their prompt or an attached file, or typed as the answer to a question."""
+
+    text: str  # exactly as the user wrote it
+    source: Literal["prompt", "file", "user_answer"]
+    source_name: str = ""  # which text it was found in ("question", "spec", a file path)
+    result_file: str | None = None  # where the result JSON is written, if the user said
+    timeout_s: float | None = None
+
+
 class Run(BaseModel):
     id: str = Field(default_factory=lambda: new_id("r"))
     question: str
@@ -214,6 +357,10 @@ class Run(BaseModel):
     # status (the run is still "running"); cleared when the run ends or is stopped.
     paused: bool = False
     caps: Caps
+    paths: list[str] = Field(default_factory=list)  # the user's files or folders (server paths)
+    workspace: WorkspaceInfo | None = None
+    command: RunCommand | None = None
+    awaiting: Literal["command"] | None = None  # the run waits for the user to answer a question
     final_answer: str | None = None
     totals: RunTotals = Field(default_factory=RunTotals)
     created_at: float = Field(default_factory=time.time)
@@ -260,16 +407,54 @@ class ForkRequest(BaseModel):
 
 
 class Question(BaseModel):
-    """P1: a targeted question routed to a specific person."""
+    """A question the run asks a person: the experiment command when none was given (purpose
+    "command"), or a targeted question (P1)."""
 
     id: str = Field(default_factory=lambda: new_id("q"))
     run_id: str
-    node_id: str
+    node_id: str | None = None
     person: str
     text: str
+    purpose: Literal["command", "clarify"] = "clarify"
     status: Literal["pending", "answered"] = "pending"
     answer: str | None = None
     created_at: float = Field(default_factory=time.time)
+
+
+class Finding(BaseModel):
+    """One line in the run's shared findings log, written after an experiment is judged or by
+    the agent itself (write_findings_log)."""
+
+    id: str = Field(default_factory=lambda: new_id("fd"))
+    run_id: str
+    node_id: str | None = None
+    family: str | None = None
+    verdict: HypothesisVerdict = "inconclusive"
+    text: str
+    evidence_node_ids: list[str] = Field(default_factory=list)
+    metrics: dict[str, float] = Field(default_factory=dict)
+    source: Literal["orchestrator", "agent_tool"] = "orchestrator"
+    reason: str = ""  # why the agent wrote it (agent_tool entries)
+    created_at: float = Field(default_factory=time.time)
+
+
+class RunIdea(BaseModel):
+    """One entry of the run vault (mirrors RunIdea in frontend/src/types.ts). `branch_finding`
+    entries are whole-branch conclusions the agent wrote once it was fairly sure."""
+
+    id: str = Field(default_factory=lambda: new_id("idea"))
+    branch: str  # the path it came from, e.g. "n1 > n3 > n7"
+    title: str
+    summary: str
+    kind: Literal["idea", "branch_finding"] = "idea"
+    confidence: float | None = None
+    node_ids: list[str] = Field(default_factory=list)
+    created_at: float = Field(default_factory=time.time)
+
+
+class RunVault(BaseModel):
+    run_id: str
+    ideas: list[RunIdea] = Field(default_factory=list)
 
 
 class RunSnapshot(BaseModel):
@@ -279,6 +464,7 @@ class RunSnapshot(BaseModel):
     nodes: list[Node]
     dead_ends: list[DeadEnd] = Field(default_factory=list)
     questions: list[Question] = Field(default_factory=list)
+    findings: list[Finding] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- API requests
@@ -296,6 +482,22 @@ class StartRunRequest(BaseModel):
     # The person's active directives (their texts), sent along with the spec. They are appended
     # to the prompts as-is.
     directives: list[str] = Field(default_factory=list)
+    # Files or folders on this machine the run works on. A folder means any file under it may be
+    # changed; listed files mean only those. They are edited in place (a backup is kept).
+    paths: list[str] = Field(default_factory=list, max_length=50)
+
+    @field_validator("paths")
+    @classmethod
+    def _existing_absolute_paths(cls, paths: list[str]) -> list[str]:
+        out = []
+        for p in paths:
+            if not os.path.isabs(p):
+                raise ValueError(f"{p!r} is not an absolute path")
+            real = os.path.realpath(p)
+            if not os.path.exists(real):
+                raise ValueError(f"{p!r} does not exist")
+            out.append(real)
+        return list(dict.fromkeys(out))
 
 
 class InstructionRequest(BaseModel):
@@ -369,6 +571,12 @@ class PublicConfig(BaseModel):
 
     fast_model: str
     strong_model: str
+    agent_hypothesis_model: str
+    agent_synthesis_model: str
+    tool_calls_per_phase: int
+    write_tool_calls_per_phase: int
+    branch_finding_min_confidence: float
+    experiment_timeout_s: float
     vault_model: str
     embedding_model: str
     max_depth: int

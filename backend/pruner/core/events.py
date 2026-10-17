@@ -12,7 +12,18 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter
 
-from pruner.core.models import Instruction, Node, Objective, Question, Run, VaultEdge, VaultItemView
+from pruner.core.models import (
+    Finding,
+    Instruction,
+    LogEntry,
+    Node,
+    Objective,
+    Question,
+    Run,
+    RunIdea,
+    VaultEdge,
+    VaultItemView,
+)
 
 
 class EventBase(BaseModel):
@@ -92,6 +103,34 @@ class QuestionAnswered(EventBase):
     question: Question
 
 
+class RunUpdated(EventBase):
+    """Run-level state changed outside the other events (e.g. it now waits for an answer, or its
+    workspace or command was set). Carries the whole run."""
+
+    type: Literal["run_updated"] = "run_updated"
+    run: Run
+
+
+class NodeLog(EventBase):
+    """One line was added to a node's log (GET /runs/{id}/nodes/{node_id}/logs has them all)."""
+
+    type: Literal["node_log"] = "node_log"
+    node_id: str
+    entry: LogEntry
+
+
+class FindingAdded(EventBase):
+    type: Literal["finding_added"] = "finding_added"
+    finding: Finding
+
+
+class IdeaAdded(EventBase):
+    """An entry was added to the run vault (GET /runs/{id}/vault)."""
+
+    type: Literal["idea_added"] = "idea_added"
+    idea: RunIdea
+
+
 class RunCompleted(EventBase):
     type: Literal["run_completed"] = "run_completed"
     run: Run  # final totals and final_answer
@@ -113,6 +152,10 @@ Event = Annotated[
     | Activity
     | QuestionAsked
     | QuestionAnswered
+    | RunUpdated
+    | NodeLog
+    | FindingAdded
+    | IdeaAdded
     | RunCompleted
     | RunFailed,
     Field(discriminator="type"),

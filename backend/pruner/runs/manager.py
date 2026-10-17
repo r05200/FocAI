@@ -30,6 +30,15 @@ objectives, the agent's turn, the amend agent's next layer, or any step an instr
 waits at a checkpoint. Calls already in flight are not cancelled; they finish first. Stop still
 works while paused: cancelling the run's tasks releases anything waiting on the gate.
 
+Files and the experiment command: a run started with `paths` first backs up the user's editable
+files (workspace/workspace.py; they are edited in place later), then the objectives are written and
+the run command is taken from the user's own text (runs/command.py). If no command can be verified,
+the run asks for it (a "command" question) and waits until it is answered.
+
+Tools: with a vault store, the agent's step gets its tools (agent/tools.py phase_tools) through a
+ToolRunner. Every call is logged on the node with the reason the agent gave (node_log events,
+data/runs/<id>/logs/<node>.jsonl); the write tools add to the run's findings log and run vault.
+
 Not built yet: pushing events to connected clients (the SSE stream), more than one agent turn,
 and acting on fork requests.
 """
@@ -45,33 +54,50 @@ from dataclasses import dataclass, field
 
 from pruner.agent.agent import Agent
 from pruner.agent.amend import AmendObjectivesAgent
+from pruner.agent.toolloop import ToolRunner
+from pruner.agent.tools import ToolContext, phase_tools
 from pruner.core.config import Config, get_config
 from pruner.core.events import (
     Activity,
     EventBase,
+    FindingAdded,
+    IdeaAdded,
     InstructionAdded,
     NodeCreated,
+    NodeLog,
     NodeUpdated,
     ObjectivesUpdated,
+    QuestionAnswered,
+    QuestionAsked,
     RunCompleted,
     RunFailed,
     RunStarted,
+    RunUpdated,
 )
 from pruner.core.llm import LLMCancelled, LLMError
 from pruner.core.models import (
     Caps,
     DeadEnd,
+    Finding,
     Instruction,
     InstructionRequest,
+    LogEntry,
     Node,
     Question,
     Run,
+    RunCommand,
+    RunIdea,
     RunSnapshot,
+    RunVault,
     StartRunRequest,
     TokenUsage,
+    ToolCallRecord,
 )
+from pruner.runs.command import verify_command
 from pruner.runs.objectives import ObjectiveMaker
 from pruner.runs.store import RunStore
+from pruner.vault.store import VaultStore
+from pruner.workspace.workspace import Workspace
 
 log = logging.getLogger(__name__)
 
@@ -97,6 +123,10 @@ class RunNotRunning(ValueError):
         self.status = status
 
 
+class QuestionClosed(ValueError):
+    """The question was already answered."""
+
+
 class ObjectivesNotReady(ValueError):
     """The run's objectives are not written yet, so it cannot take an instruction."""
 
@@ -120,7 +150,11 @@ class LiveRun:
     nodes: list[Node] = field(default_factory=list)
     dead_ends: list[DeadEnd] = field(default_factory=list)
     questions: list[Question] = field(default_factory=list)
+    findings: list[Finding] = field(default_factory=list)
     tasks: set[asyncio.Task] = field(default_factory=set)
+    answers: dict[str, asyncio.Future] = field(default_factory=dict)  # question id -> waiter
+    workspace: Workspace | None = None
+    tool_seen: dict[str, str] = field(default_factory=dict)  # tool results reused within the run
     level: int = 0  # depth of the level in progress
     level_start: RunSnapshot | None = None  # the tree when that level was created
     step: asyncio.Task | None = None  # the agent's step in flight, which an instruction aborts
@@ -132,7 +166,7 @@ class LiveRun:
     def snapshot(self) -> RunSnapshot:
         """The tree as it is right now."""
         return RunSnapshot(run=self.run, nodes=self.nodes, dead_ends=self.dead_ends,
-                           questions=self.questions)
+                           questions=self.questions, findings=self.findings)
 
     def saved(self) -> RunSnapshot:
         """What is saved between level boundaries: the live run, with the level in progress as
@@ -143,14 +177,16 @@ class LiveRun:
         nodes = [origin[n.id] if n.depth >= self.level else n
                  for n in self.nodes if n.depth < self.level or n.id in origin]
         return RunSnapshot(run=self.run, nodes=nodes, dead_ends=self.dead_ends,
-                           questions=self.questions)
+                           questions=self.questions, findings=self.findings)
 
 
 class RunManager:
     def __init__(self, store: RunStore, agent: Agent, objectives: ObjectiveMaker,
                  cfg: Config | None = None, *,
-                 amender: AmendObjectivesAgent | None = None) -> None:
+                 amender: AmendObjectivesAgent | None = None,
+                 vault: VaultStore | None = None) -> None:
         self.store, self.agent, self.objectives, self.amender = store, agent, objectives, amender
+        self.vault = vault  # gives the agent its tools; without it the agent answers from the prompt
         self.cfg = cfg or get_config()
         self._live: dict[str, LiveRun] = {}
 
@@ -163,9 +199,10 @@ class RunManager:
             people=people, primary_person=req.primary_person,
             vault_people=(req.vault_people if req.vault_people is not None
                           else [req.primary_person]),
-            mode=req.mode,
+            mode=req.mode, paths=list(req.paths),
             caps=Caps(max_depth=self.cfg.max_depth, branching=self.cfg.branching,
-                      node_budget=self.cfg.node_budget),
+                      node_budget=self.cfg.node_budget,
+                      tool_calls_per_phase=self.cfg.tool_calls_per_phase),
         )
 
     def _spawn(self, state: LiveRun, coro) -> asyncio.Task:
@@ -199,8 +236,9 @@ class RunManager:
         state = LiveRun(run=snap.run, emitter=Emitter(self.store, run_id,
                                                       self.store.last_seq(run_id)),
                         nodes=nodes, dead_ends=list(snap.dead_ends),
-                        questions=list(snap.questions), level_start=start,
-                        level=max((n.depth for n in nodes), default=0))
+                        questions=list(snap.questions), findings=list(snap.findings),
+                        level_start=start, level=max((n.depth for n in nodes), default=0),
+                        workspace=Workspace.load(run_id, self.cfg) if snap.run.paths else None)
         if not snap.run.paused:
             state.gate.set()
         self._live[run_id] = state
@@ -261,8 +299,126 @@ class RunManager:
         self._live[run.id] = state
         state.emitter.emit(RunStarted, run=run)
         self.store.save_snapshot(RunSnapshot(run=run, nodes=[]))  # so it shows up as running
+        self.store.save_run_vault(RunVault(run_id=run.id))
         self._spawn(state, self._run(state))
         return run
+
+    # ---- questions
+
+    async def answer(self, run_id: str, question_id: str, text: str) -> Question:
+        """Record a person's answer. Answering the "command" question sets the run's command
+        (exactly as typed) and lets the run continue. KeyError if the run or question is unknown,
+        RunNotRunning if the run finished, QuestionClosed if it was already answered."""
+        state = self._running(run_id)
+        question = next((q for q in state.questions if q.id == question_id), None)
+        if question is None:
+            raise KeyError(question_id)
+        if question.status == "answered":
+            raise QuestionClosed(f"question {question_id} was already answered")
+        answer = text.strip()
+        if not answer:
+            raise ValueError("the answer is empty")
+        question.status, question.answer = "answered", answer
+        state.emitter.emit(QuestionAnswered, question=question)
+        if question.purpose == "command":
+            state.run.command = RunCommand(text=answer, source="user_answer",
+                                           source_name=question.id)
+            state.run.awaiting = None
+            state.emitter.emit(RunUpdated, run=state.run)
+        self._save(state)
+        waiter = state.answers.pop(question_id, None)
+        if waiter is not None and not waiter.done():
+            waiter.set_result(answer)
+        return question
+
+    async def _ask(self, state: LiveRun, text: str, purpose: str) -> str:
+        """Ask the run's primary person a question and wait for the answer (Stop cancels it)."""
+        question = Question(run_id=state.run.id, person=state.run.primary_person, text=text,
+                            purpose=purpose)  # type: ignore[arg-type]
+        waiter = asyncio.get_running_loop().create_future()
+        state.answers[question.id] = waiter
+        state.questions.append(question)
+        if purpose == "command":
+            state.run.awaiting = "command"
+        state.emitter.emit(QuestionAsked, question=question)
+        state.emitter.emit(RunUpdated, run=state.run)
+        self._save(state)
+        return await waiter
+
+    # ---- workspace, command, logs and findings
+
+    async def _setup_files(self, state: LiveRun) -> dict[str, str]:
+        """Back up the user's files (if the run has paths) and return the texts the command may
+        be quoted from."""
+        run = state.run
+        if not run.paths:
+            return {}
+        state.workspace = await asyncio.to_thread(Workspace.create, run.id, run.paths, self.cfg)
+        run.workspace = state.workspace.info
+        state.emitter.emit(RunUpdated, run=run)
+        state.emitter.emit(Activity, message=f"Backed up {len(run.workspace.files)} editable "
+                                             f"file(s) under {run.workspace.root}; experiments "
+                                             f"will edit them in place.")
+        return state.workspace.attachments_text()
+
+    async def _settle_command(self, state: LiveRun, candidate, attachments: dict[str, str]) -> None:
+        """Keep the command the objectives LLM found only if the user wrote it; else ask."""
+        run = state.run
+        if state.workspace is None or run.command is not None:
+            return
+        sources = {"question": run.question,
+                   **{("spec" if i.kind == "spec" else f"instruction {i.id}"): i.text
+                      for i in run.instructions},
+                   **attachments}
+        command, why = verify_command(candidate.run_command, sources,
+                                      state.workspace.roots.root,
+                                      result_hint=candidate.result_hint)
+        if command is not None:
+            run.command = command
+            state.emitter.emit(RunUpdated, run=run)
+            state.emitter.emit(Activity, message=f"Experiment command (from the "
+                                                 f"{command.source_name}): {command.text}")
+            return
+        root = state.workspace.roots.root
+        await self._ask(state, (f"What command runs one experiment in {root}? ({why}.) Type it "
+                                f"exactly as it should run, e.g. `python bench.py`; it should "
+                                f"print or write a JSON result."), "command")
+
+    def _log(self, state: LiveRun, node_id: str, entry: LogEntry) -> None:
+        self.store.append_log(state.run.id, node_id, entry)
+        state.emitter.emit(NodeLog, node_id=node_id, entry=entry)
+
+    def _log_call(self, state: LiveRun, node_id: str, record: ToolCallRecord) -> None:
+        self._log(state, node_id, LogEntry(kind="tool_call", title=f"Called {record.tool}",
+                                           text=record.reason, tool=record.tool,
+                                           args=record.args, phase=record.phase))
+        self._log(state, node_id, LogEntry(
+            kind="tool_result", title=f"{record.tool} returned"
+            + (" (reused from an earlier identical call)" if record.cached else ""),
+            text=record.result_preview, tool=record.tool, phase=record.phase))
+
+    def _add_finding(self, state: LiveRun, finding: Finding) -> None:
+        state.findings.append(finding)
+        self.store.append_finding(finding)
+        state.emitter.emit(FindingAdded, finding=finding)
+
+    def _add_idea(self, state: LiveRun, idea: RunIdea) -> None:
+        vault = self.store.run_vault(state.run.id) or RunVault(run_id=state.run.id)
+        vault.ideas.append(idea)
+        self.store.save_run_vault(vault)
+        state.emitter.emit(IdeaAdded, idea=idea)
+
+    def _runner(self, state: LiveRun, node: Node, phase: str = "hypothesis") -> ToolRunner | None:
+        """The node's tools for `phase`, or None when the manager has no vault (no tools)."""
+        if self.vault is None:
+            return None
+        ctx = ToolContext(run=state.run, nodes=state.nodes, vault=self.vault, cfg=self.cfg,
+                          workspace=state.workspace, version=node.version, node_id=node.id,
+                          on_finding=lambda f: self._add_finding(state, f),
+                          on_branch_finding=lambda i: self._add_idea(state, i))
+        return ToolRunner(phase_tools(ctx, phase), phase=phase, cfg=self.cfg,  # type: ignore[arg-type]
+                          on_call=lambda r: self._log_call(state, node.id, r),
+                          seen=state.tool_seen)
 
     async def instruct(self, run_id: str, req: InstructionRequest) -> Instruction:
         """Record a mid-run prompt now; amend the objectives and re-check the tree in the
@@ -379,16 +535,17 @@ class RunManager:
             if state.amends_open == 0:
                 state.amends_idle.set()
 
-    async def _step(self, state: LiveRun):
-        """The agent's step. An instruction that arrives meanwhile aborts it: the level is
-        rewound, the amendment finishes, and the step starts again with the new instructions."""
+    async def _step(self, state: LiveRun, node: Node):
+        """The agent's step on `node`. An instruction that arrives meanwhile aborts it: the level
+        is rewound, the amendment finishes, and the step starts again with the new instructions."""
         run = state.run
         while True:
             await self._checkpoint(state)
             await state.amends_idle.wait()
             step = asyncio.create_task(self.agent.run(
                 question=run.question, objectives=run.objectives,
-                instructions=run.instructions, directives=run.directives))
+                instructions=run.instructions, directives=run.directives,
+                runner=self._runner(state, node)))
             state.step = step
             try:
                 return await step
@@ -407,13 +564,18 @@ class RunManager:
         try:
             with self._scopes(run.id):
                 await self._checkpoint(state)
+                attachments = await self._setup_files(state)
                 spec = next((i.text for i in run.instructions if i.kind == "spec"), "")
-                run.objectives = await self.objectives.create(
-                    question=run.question, spec=spec, directives=run.directives)
+                run.objectives, candidate = await self.objectives.create_full(
+                    question=run.question, spec=spec, directives=run.directives,
+                    attachments=attachments)
                 emitter.emit(ObjectivesUpdated, objectives=run.objectives)
+                await self._settle_command(state, candidate, attachments)
 
-                root = Node(run_id=run.id, type="hypothesis", description=run.question,
-                            status="running")
+                root = Node(id="n1", run_id=run.id, type="hypothesis", description=run.question,
+                            status="running",
+                            version=state.workspace.info.applied_version
+                            if state.workspace else None)
                 nodes.append(root)
                 emitter.emit(NodeCreated, node=root)
                 emitter.emit(Activity, message="The agent is working on the question.",
@@ -421,7 +583,8 @@ class RunManager:
                 emitter.emit(NodeUpdated, node=root, change="running")
                 self._boundary(state)  # level 0 created
 
-                result = await self._step(state)
+                result = await self._step(state, root)
+                root.tool_calls = {"hypothesis": len(result.records)} if result.records else {}
 
                 await self._checkpoint(state)
                 await state.amends_idle.wait()  # let a queued amendment finish first

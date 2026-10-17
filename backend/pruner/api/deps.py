@@ -74,4 +74,4 @@ def get_amend_agent() -> AmendObjectivesAgent:
 @lru_cache(maxsize=1)
 def get_run_manager() -> RunManager:
     return RunManager(get_run_store(), get_agent(), get_objective_maker(),
-                      amender=get_amend_agent())
+                      amender=get_amend_agent(), vault=get_vault_store())
