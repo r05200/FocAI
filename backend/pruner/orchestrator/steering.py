@@ -48,7 +48,7 @@ class Job:
 
 
 def rerate_targets(nodes: Sequence[Node]) -> list[Node]:
-    return [n for n in nodes if n.parent_id is not None
+    return [n for n in nodes if n.parent_id is not None and n.type != "conclusion"
             and n.status in ("pending", "parked", "done")]
 
 

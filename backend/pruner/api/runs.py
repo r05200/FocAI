@@ -2,10 +2,10 @@
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import PlainTextResponse
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse, StreamingResponse
 
-from pruner.api.common import SSE_RESPONSES, not_implemented
+from pruner.api.common import SSE_HEADERS, SSE_RESPONSES
 from pruner.api.deps import get_agent_llm, get_run_manager, get_run_store, get_supporting_llm
 from pruner.core.llm import LLM
 from pruner.core.models import (
@@ -21,6 +21,7 @@ from pruner.core.models import (
 )
 from pruner.runs.manager import InstructionLocked, ObjectivesNotReady, RunManager, RunNotRunning
 from pruner.runs.store import RunStore
+from pruner.runs.stream import run_events
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -31,8 +32,9 @@ Manager = Annotated[RunManager, Depends(get_run_manager)]
 @router.post("", status_code=202)
 async def start_run(body: StartRunRequest, manager: Manager) -> Run:
     """Send the prompt: create the run and spin up the agent in the background. The run's
-    objectives are written from `spec` first, then the agent works on `question`. Follow it via
-    the saved events (the live stream is not built yet) or GET /runs/{id}."""
+    objectives are written from `spec` first, then the agent works on `question`. Follow it live
+    with GET /runs/{id}/events, or poll GET /runs/{id}. With `paths` the run edits those files
+    and runs the user's command; without, it is a research run that searches for resources."""
     return await manager.start(body)
 
 
@@ -163,7 +165,25 @@ async def stop_run(
 @router.get("/{run_id}/events", responses=SSE_RESPONSES)
 async def stream_run_events(
     run_id: str,
+    request: Request,
+    store: Store,
+    manager: Manager,
     after: int = Query(0, ge=0, description="Only send events with seq greater than this."),
+    last_event_id: Annotated[str | None, Header()] = None,
 ):
-    """SSE stream of the run's events. Replays history after `after`, then goes live."""
-    not_implemented("stream_run_events")
+    """SSE stream of the run's events: the saved ones with seq greater than `after` (or the
+    Last-Event-ID header a reconnecting EventSource sends, whichever is later), then live ones.
+    `event:` is the type, `id:` the seq, `data:` the event JSON; a ": ping" comment every 15 s.
+    It ends after run_completed or run_failed (at once for a finished run with nothing newer).
+    A client that falls far behind is cut off and resumes with Last-Event-ID. 404 if the run is
+    unknown."""
+    if store.snapshot(run_id) is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    try:
+        resume = int(last_event_id) if last_event_id else 0
+    except ValueError:
+        resume = 0
+    return StreamingResponse(
+        run_events(store, manager.bus, run_id, max(after, resume),
+                   is_disconnected=request.is_disconnected),
+        media_type="text/event-stream", headers=SSE_HEADERS)

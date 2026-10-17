@@ -16,3 +16,6 @@ SSE_RESPONSES = {
         "content": {"text/event-stream": {}},
     }
 }
+
+# Sent with every SSE response: no caching, and no buffering by a proxy in front.
+SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}

@@ -27,6 +27,8 @@ class IllegalAction(ValueError):
 
 
 def check(node: Node, action: HumanAction) -> None:
+    if node.type == "conclusion":
+        raise IllegalAction("a conclusion is the run's answer; act on the node it came from")
     if action == "park" and node.parent_id is None:
         raise IllegalAction("the baseline cannot be parked: every result is compared with it")
     if action == "restore" and node.status != "parked":

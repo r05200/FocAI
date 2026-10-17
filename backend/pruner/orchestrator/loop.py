@@ -1,10 +1,12 @@
 """The orchestrator: owns the tree and moves nodes through hypothesis -> experiment -> synthesis.
 
-RunManager hands a run with `paths` to Orchestrator.run() (runs without files keep the single
-agent turn). The run:
+RunManager hands every run to Orchestrator.run(). A run with `paths` changes the user's files
+and runs their command; a run without files is a research run: hypotheses are guesses at what
+the user wants to see, and an experiment searches the vault (and the web, if set up) for resources
+whose relevance synthesis then judges (orchestrator/research.py). The run:
   1. backs up the user's files, writes the objectives, settles the experiment command (or asks);
   2. runs the baseline: node n1 is the original files, measured once (if the command fails on
-     them the run stops: nothing can be compared);
+     them the run stops: nothing can be compared). A research run's n1 is the question itself;
   3. expands n1: 2-3 validated, pre-scored hypotheses (orchestrator/proposer.py);
   4. repeats, one step at a time (each step can be paused, stopped, or aborted by an instruction):
        first any expansion a person asked for (a confirmed suggestion or a restore: state.jobs),
@@ -17,7 +19,9 @@ agent turn). The run:
      and the best node's own advice was to stop;
   5. finishes: the best supported version is left applied to the user's files (the original
      files if nothing was supported), the patch from the originals is saved
-     (GET /runs/{id}/patch), and a final report is written.
+     (GET /runs/{id}/patch), and a final report is written. The answer becomes a conclusion
+     node, a child of the node the run ended on: the best node if it said stop and the
+     objectives are covered, else the node judged last (the root if none was).
 
 Steering (steer): after an instruction or a chip toggle, the manager's amendment task calls
 steer(), which re-rates the tree in one batched call and offers suggestions
@@ -39,14 +43,21 @@ from pydantic import BaseModel
 from pruner.agent.toolloop import AgentSession
 from pruner.core import prompts
 from pruner.core.config import Config, get_config
-from pruner.core.events import Activity, NodeCreated, NodeUpdated, ObjectivesUpdated
+from pruner.core.events import (
+    Activity,
+    NodeCreated,
+    NodeUpdated,
+    ObjectivesUpdated,
+    VaultRetrieved,
+)
 from pruner.core.llm import LLM, LLMError
 from pruner.core.models import DeadEnd, ForkRequest, LogEntry, Node
 from pruner.orchestrator import steering
 from pruner.orchestrator.actions import experiments_run, plan_action, room_under, why_blocked
 from pruner.orchestrator.experiment import ExperimentPhase, Runner, describe
-from pruner.orchestrator.proposer import HypothesisPhase
+from pruner.orchestrator.proposer import HypothesisPhase, next_node_ids
 from pruner.orchestrator.queue import select_next
+from pruner.orchestrator.research import ResearchPhase, queries_of
 from pruner.orchestrator.steering import Job
 from pruner.orchestrator.synthesis import SynthesisPhase, baseline_text
 from pruner.pruning.postscorer import PostScorer
@@ -69,7 +80,7 @@ class BaselineFailed(RuntimeError):
 def best_node(nodes: list[Node]) -> Node | None:
     """The supported, measured node with the best judge score (then confidence), if any."""
     good = [n for n in nodes if n.verdict == "supported" and n.status == "done"
-            and n.experiment is not None and not n.experiment.error and n.version]
+            and n.experiment is not None and not n.experiment.error]
     return max(good, key=lambda n: (n.post_score or 0.0,
                                     n.synthesis.confidence if n.synthesis else 0.0),
                default=None)
@@ -84,6 +95,7 @@ class Orchestrator:
         self.hypothesis = HypothesisPhase(agent_llm, prescorer, self.cfg)
         self.experiment = ExperimentPhase(self.cfg, runner)
         self.synthesis = SynthesisPhase(agent_llm, postscorer, self.cfg)
+        self.research = ResearchPhase(prescorer.vault, prescorer.llm, self.cfg)
 
     def llms(self) -> list[LLM]:
         """Every LLM it calls, so the manager can scope them to the run (for stop)."""
@@ -101,18 +113,30 @@ class Orchestrator:
         emitter.emit(ObjectivesUpdated, objectives=run.objectives)
         await host._settle_command(state, candidate, attachments)
 
-        assert state.workspace is not None
-        root = Node(id="n1", run_id=run.id, type="experiment", status="pending",
-                    phase="experiment", description="Baseline: the files as given, before any "
-                                                    "change.",
-                    summary="baseline (the original files)",
-                    version=state.workspace.info.baseline_version)
-        state.nodes.append(root)
-        emitter.emit(NodeCreated, node=root)
-        host._boundary(state)
-
-        await host._step(state, lambda: self._baseline(host, state, root))
-        host._boundary(state)
+        if state.workspace is None:
+            root = Node(id="n1", run_id=run.id, type="reading", status="done", phase="complete",
+                        description=run.question, summary="the question (a research run: no "
+                                                          "files)", decided_by="agent")
+            state.nodes.append(root)
+            emitter.emit(NodeCreated, node=root)
+            emitter.emit(Activity, node_id=root.id, message=(
+                "No files were given, so this is a research run: hypotheses guess what you want "
+                "to see, and experiments search " + ("the vault and the web" if
+                                                     self.research.web_ready() else
+                                                     "the vault (web search is not set up)")
+                + " for resources."))
+            host._boundary(state)
+        else:
+            root = Node(id="n1", run_id=run.id, type="experiment", status="pending",
+                        phase="experiment", description="Baseline: the files as given, before "
+                                                        "any change.",
+                        summary="baseline (the original files)",
+                        version=state.workspace.info.baseline_version)
+            state.nodes.append(root)
+            emitter.emit(NodeCreated, node=root)
+            host._boundary(state)
+            await host._step(state, lambda: self._baseline(host, state, root))
+            host._boundary(state)
         await host._step(state, lambda: self.hypothesis.expand(host, state, root,
                                                                mode="initial"))
         host._boundary(state)
@@ -141,6 +165,7 @@ class Orchestrator:
             if self._covered(state):
                 emitter.emit(Activity, message="Every objective is covered and the best "
                                                "result's advice was to stop.")
+                state.concluded_from = best_node(state.nodes).id  # type: ignore[union-attr]
                 break
         await self._finish(host, state)
 
@@ -171,19 +196,30 @@ class Orchestrator:
     async def _advance(self, host: RunManager, state: LiveRun, node: Node) -> None:
         """Run one waiting node through experiment and synthesis, then act on its advice."""
         run = state.run
-        assert state.workspace is not None and run.command is not None
         if node.status != "pending":  # a person parked it between its selection and now
             return
         node.status, node.phase = "running", "experiment"
         host._emit(state, NodeUpdated, node=node, change="running")
-        host._log(state, node.id, LogEntry(kind="activity", title="Running the experiment",
-                                           text=run.command.text, phase="experiment"))
-        exp = await self.experiment.run(state.workspace, run.command, node.version or "")
+        if state.workspace is None:
+            host._log(state, node.id, LogEntry(
+                kind="activity", title="Searching for resources",
+                text="; ".join(queries_of(node, self.cfg)), phase="experiment"))
+            exp = await self.research.run(run, node, on_retrieved=lambda people, q, ids, sims:
+                                          host._emit(state, VaultRetrieved, node_id=node.id,
+                                                     person="+".join(people), query=q,
+                                                     item_ids=ids, similarities=sims))
+        else:
+            assert run.command is not None
+            host._log(state, node.id, LogEntry(kind="activity", title="Running the experiment",
+                                               text=run.command.text, phase="experiment"))
+            exp = await self.experiment.run(state.workspace, run.command, node.version or "")
         run.totals.experiments_run = experiments_run(state.nodes)
         node.experiment, node.result = exp, describe(exp)
         host._log(state, node.id, LogEntry(kind="error" if exp.error else "decision",
                                            title="Experiment failed" if exp.error
-                                           else "Experiment measured",
+                                           else "Experiment measured"
+                                           + (" (reused an identical earlier run)"
+                                              if exp.cached else ""),
                                            text=node.result, phase="experiment"))
         if exp.error:
             state.dead_ends.append(DeadEnd(run_id=run.id, node_id=node.id,
@@ -192,6 +228,7 @@ class Orchestrator:
         await host._checkpoint(state)
         node.phase = "synthesis"
         synthesis = await self.synthesis.run(host, state, node)
+        state.concluded_from = node.id
         host._emit(state, NodeUpdated, node=node,
                    change={"failed": "failed", "parked": "parked"}.get(node.status, "done"))
 
@@ -297,17 +334,24 @@ class Orchestrator:
 
     async def _finish(self, host: RunManager, state: LiveRun) -> None:
         run = state.run
-        best = await asyncio.to_thread(self.settle_files, host, state)
-        kept = (f"{best.id} ({best.family}): {best.summary}" if best
-                else "none: the original files were restored")
-        host._emit(state, Activity, node_id=best.id if best else None,
-                   message=f"Left applied to the files: {kept}. The patch from the originals is "
-                           f"at GET /runs/{run.id}/patch.")
+        if state.workspace is None:
+            best = best_node(state.nodes)
+            run.best_node_id = best.id if best else None
+            kept = (f"best direction {best.id} ({best.family}): {best.summary}" if best
+                    else "none: no direction was supported")
+        else:
+            best = await asyncio.to_thread(self.settle_files, host, state)
+            kept = (f"{best.id} ({best.family}): {best.summary}" if best
+                    else "none: the original files were restored")
+            host._emit(state, Activity, node_id=best.id if best else None,
+                       message=f"Left applied to the files: {kept}. The patch from the originals "
+                               f"is at GET /runs/{run.id}/patch.")
         prompt = prompts.render(
             "final_report", question=run.question,
             instructions=prompts.render_instructions(run.instructions, run.directives),
             objectives=prompts.render_objectives(run.objectives),
-            baseline=baseline_text(state.nodes),
+            baseline=("(none: a research run without files)" if state.workspace is None
+                      else baseline_text(state.nodes)),
             findings="\n".join(f"- {f.node_id or '-'} [{f.verdict}] {f.text}"
                                for f in state.findings) or "(none)",
             kept=kept)
@@ -318,3 +362,23 @@ class Orchestrator:
         except LLMError:  # the run's work is done; a missing report should not fail it
             run.final_answer = f"Kept: {kept}.\nFindings:\n" + "\n".join(
                 f"- [{f.verdict}] {f.text}" for f in state.findings)
+        self._conclude(host, state)
+
+    def _conclude(self, host: RunManager, state: LiveRun) -> Node:
+        """The answer as a conclusion node, a child of the node the run ended on."""
+        by_id = {n.id: n for n in state.nodes}
+        parent = (by_id.get(state.concluded_from or "")
+                  or next(n for n in state.nodes if n.parent_id is None))
+        answer = state.run.final_answer or ""
+        node = Node(id=next_node_ids(state.nodes, 1)[0], run_id=state.run.id,
+                    parent_id=parent.id, depth=parent.depth + 1, type="conclusion",
+                    status="done", phase="complete", decided_by="agent",
+                    description="Conclusion: the run's answer",
+                    summary=(answer.strip().splitlines() or [""])[0][:200], result=answer,
+                    criteria_progress=sorted({o for n in state.nodes if n.status == "done"
+                                              for o in n.criteria_progress}))
+        state.nodes.append(node)
+        host._emit(state, NodeCreated, node=node)
+        host._log(state, node.id, LogEntry(kind="decision", title="Answer reached",
+                                           text=f"Concluded from {parent.id}.\n{answer}"))
+        return node

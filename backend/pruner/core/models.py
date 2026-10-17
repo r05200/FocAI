@@ -28,7 +28,8 @@ VaultKind = Literal["paper", "note", "question", "correction", "learned", "direc
 VaultRelation = Literal["contradicts", "supports", "agrees", "investigate"]
 VaultJudgement = Literal["contradicts", "supports", "agrees", "investigate", "unrelated"]
 PERSON_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,31}$"  # also a filename; no leading "_" (reserved files)
-NodeType = Literal["hypothesis", "experiment", "reading"]
+# conclusion = the run's answer, added at the end as a child of the node the answer came from.
+NodeType = Literal["hypothesis", "experiment", "reading", "conclusion"]
 # pending = proposed and passed pre-scoring, waiting to run; parked covers both pre- and
 # post-scoring parks (see Decision.stage).
 NodeStatus = Literal["pending", "running", "done", "parked", "failed"]
@@ -206,6 +207,8 @@ class HypothesisSpec(BaseModel):
     planned_experiment: str = ""
     expected_signal: str = ""
     measures: list[str] = Field(default_factory=list)  # result keys it expects to move
+    # Research runs (no files): the searches its experiment runs (vault, and web if set up).
+    queries: list[str] = Field(default_factory=list)
 
 
 class ExperimentRun(BaseModel):
@@ -218,6 +221,7 @@ class ExperimentRun(BaseModel):
     result: dict | None = None  # the parsed result JSON
     metrics: dict[str, float] = Field(default_factory=dict)  # its numeric leaves, dotted keys
     error: str | None = None
+    cached: bool = False  # reused from an identical earlier experiment (cfg.experiment_cache)
 
 
 class Synthesis(BaseModel):

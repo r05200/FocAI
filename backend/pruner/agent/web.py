@@ -1,7 +1,8 @@
 """Web research for the agent: search, fetch, and checking that cited findings are real.
 
-- SearchProvider: the web search API. None is chosen yet, so get_search_provider() returns
-  NoSearchProvider, whose search() raises SearchNotConfigured. To add one, write a class with an
+- SearchProvider: the web search API. "brave" (BraveSearch) is built in; with none set,
+  get_search_provider() returns NoSearchProvider, whose search() raises SearchNotConfigured.
+  To add another, write a class with an
   async `search(query, k)` returning SearchHit objects, and return it from get_search_provider()
   for its name (cfg.search_provider, env PRUNER_SEARCH_PROVIDER; key in SEARCH_API_KEY).
   Gemini's own Google Search grounding is not an option on the free tier for the 3.x models
@@ -60,12 +61,48 @@ class NoSearchProvider:
             "pruner/agent/web.py)")
 
 
+class BraveSearch:
+    """The Brave Search API (api.search.brave.com, key in SEARCH_API_KEY). Not yet checked
+    against the live API: the request and response shapes follow Brave's documented web search
+    endpoint."""
+
+    URL = "https://api.search.brave.com/res/v1/web/search"
+
+    def __init__(self, api_key: str, client: httpx.AsyncClient | None = None,
+                 timeout_s: float = 15.0) -> None:
+        if not api_key:
+            raise SearchNotConfigured("PRUNER_SEARCH_PROVIDER is brave but SEARCH_API_KEY is "
+                                      "empty")
+        self._key, self._client, self._timeout = api_key, client, timeout_s
+
+    async def search(self, query: str, k: int) -> list[SearchHit]:
+        client = self._client or httpx.AsyncClient()
+        try:
+            resp = await client.get(self.URL, params={"q": query, "count": k},
+                                    headers={"Accept": "application/json",
+                                             "X-Subscription-Token": self._key},
+                                    timeout=self._timeout)
+            resp.raise_for_status()
+            results = (resp.json().get("web") or {}).get("results") or []
+        finally:
+            if self._client is None:
+                await client.aclose()
+        return [SearchHit(title=_strip_tags(r.get("title", "")), url=r["url"],
+                          snippet=_strip_tags(r.get("description", "")))
+                for r in results[:k] if r.get("url")]
+
+
+def _strip_tags(text: str) -> str:
+    return " ".join(re.sub(r"<[^>]+>", "", text).split())
+
+
 def get_search_provider(cfg: Config | None = None) -> SearchProvider:
     cfg = cfg or get_config()
     name = cfg.search_provider.strip().lower()
     if not name:
         return NoSearchProvider()
-    # Add providers here, e.g.: if name == "brave": return BraveSearch(cfg.search_api_key)
+    if name == "brave":
+        return BraveSearch(cfg.search_api_key)
     raise SearchNotConfigured(f"unknown search provider {cfg.search_provider!r}")
 
 

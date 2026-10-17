@@ -127,3 +127,27 @@ it needs, and what milestone or session it came from.
 
 [ ] Several older items above are done now (the logs and run-vault routes exist; command.py and
     runner.py are wired in). Tick them off when convenient.
+
+--- From M5 (live stream, replay, experiment cache) + research runs + conclusion nodes ----------
+
+[ ] Frontend (types.ts):
+      - NodeType gains "conclusion": the run's answer, added at the end as a child of the node the
+        run ended on (result = the final answer). It cannot be kept/parked/restored.
+      - HypothesisSpec.queries (research runs), ExperimentRun.cached
+      - A run without paths is now a RESEARCH run (no more single agent turn): n1 is a "reading"
+        node holding the question; experiments have result.resources = [{source: "vault", id,
+        person, kind, title, summary, similarity, query} | {source: "web", url, title, snippet,
+        excerpt?, query}], metrics resources / vault_hits / web_hits / top_similarity.
+    GET /api/runs/{id}/events is live now (SSE, ?after= and Last-Event-ID); the frontend's
+    RUN_EVENT_TYPES lacks run_updated, node_log, finding_added, idea_added, suggestions_ready and
+    suggestion_resolved, so those are not delivered to its handlers yet.
+    GET /api/replays and GET /api/replays/{name}/events?speed= are live (same SSE format).
+
+[ ] Make a demo replay: cd backend && uv run python -m pruner.replay export <run_id> <name>
+
+[ ] Web search for research runs: set PRUNER_SEARCH_PROVIDER=brave and SEARCH_API_KEY (Brave
+    Search API). BraveSearch is unit-tested against a mocked response only, not the live API.
+    Without it research experiments search only the vault.
+
+[ ] A run left "running" by a server crash streams pings forever (nothing will finish it); part
+    of the crash-recovery item above.

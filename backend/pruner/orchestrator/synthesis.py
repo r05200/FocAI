@@ -9,6 +9,8 @@ run(node) does, after the experiment:
      is parked (restorable) unless a person kept the node, otherwise the node is done;
   3. the finding goes to the shared findings log, the run vault (an idea) and, when supported or
      refuted, the run owner's vault as a "learned" item.
+A research run (no files) judges the resources its search found instead
+(synthesize_research.md): are they relevant to the objectives?
 The baseline node gets no LLM synthesis: its numbers are what the others are compared with.
 """
 
@@ -101,7 +103,9 @@ class SynthesisPhase:
         values = build_context(view, node, self.cfg)
         change = (state.workspace.diff(node.base_version, node.version)
                   if state.workspace and node.base_version and node.version else "(none)")
-        baseline = baseline_text(state.nodes)
+        research = state.workspace is None
+        baseline = ("(none: this run searches for resources)" if research
+                    else baseline_text(state.nodes))
 
         async def judge() -> str:
             try:
@@ -119,16 +123,18 @@ class SynthesisPhase:
             and node.decision.verdict == "keep"
         judge_task = asyncio.create_task(judge())
         hypothesis = node.hypothesis
-        prompt = prompts.render(
-            "synthesize", question=values["question"], instructions=values["instructions"],
-            objectives=values["objectives"], command=values["command"],
-            ancestors=values["ancestors"], findings=values["findings"],
-            budget=values["budget"],
-            hypothesis=(f"{hypothesis.statement}\nExpected: {hypothesis.expected_signal}"
-                        if hypothesis else node.description),
-            change=change[:4000] or "(none)", baseline=baseline,
-            result=describe(node.experiment),
-            judge=await judge_task, actions=action_menu(state, node))
+        shared = {
+            "question": values["question"], "instructions": values["instructions"],
+            "objectives": values["objectives"], "ancestors": values["ancestors"],
+            "findings": values["findings"], "budget": values["budget"],
+            "hypothesis": (f"{hypothesis.statement}\nExpected: {hypothesis.expected_signal}"
+                           if hypothesis else node.description),
+            "result": describe(node.experiment), "judge": await judge_task,
+            "actions": action_menu(state, node)}
+        prompt = (prompts.render("synthesize_research", **shared) if research
+                  else prompts.render("synthesize", command=values["command"],
+                                      change=change[:4000] or "(none)", baseline=baseline,
+                                      **shared))
         runner = host._runner(state, node, "synthesis")
         out = await AgentSession(self.llm, self.cfg).run(
             SynthesisOutput, prompt, model=self.cfg.agent_synthesis_model, purpose="synthesis",

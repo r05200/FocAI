@@ -9,6 +9,9 @@ expand(parent) does, in order:
   3. One proposal per family is kept, up to `count`.
   4. Each survivor becomes a child node with its own code version (nothing is written to the
      user's files) and a deterministic id (n2, n3, ...).
+  A run without files is a research run: the agent guesses what the user wants to see, and each
+  hypothesis carries 1-3 search queries instead of an edit (propose_research.md). They are only
+  checked for having queries and not repeating earlier searches (no repair call, no version).
   5. The pre-score judge ranks the siblings together (PreScorer.score_siblings). The low zone is
      parked (kept, restorable, recorded as a dead end); a near-duplicate of earlier work is parked
      too. pre_band shows the zone as low / medium / high.
@@ -61,6 +64,20 @@ MODE_BRIEFS = {
                "tells the two apart.",
     "transfer": "Apply the supported change named below to another part of the code.",
 }
+# A research run (no files): a hypothesis is a guess about what the user wants to see, and its
+# experiment searches for resources that would show it (orchestrator/research.py).
+RESEARCH_BRIEFS = {
+    "initial": "These are the first searches: guess what the user most wants to see.",
+    "more_experiments": "Dig deeper in this node's direction (same family): narrower or "
+                        "follow-up searches, or a check that what was found holds up.",
+    "new_hypothesis": "Make a different guess (another family) than the ones tried from here.",
+    "diagnose": "The last search found nothing useful, or something surprising: search in a way "
+                "that explains why (other wording, other kinds of sources).",
+    "combine": "Combine the supported directions named below into one search.",
+    "resolve": "A resource contradicts a note or an earlier finding: search for what tells the "
+               "two apart.",
+    "transfer": "Look for the same kind of resource for another part of the question.",
+}
 
 
 class ProposedHypothesis(BaseModel):
@@ -72,6 +89,7 @@ class ProposedHypothesis(BaseModel):
     measures: list[str] = Field(default_factory=list)
     edits: list[FileEdit] = Field(default_factory=list)
     new_files: list[NewFile] = Field(default_factory=list)
+    queries: list[str] = Field(default_factory=list)  # research runs: the searches to run
     vault_items_used: list[str] = Field(default_factory=list)
 
 
@@ -90,6 +108,10 @@ def next_node_ids(nodes: list[Node], count: int) -> list[str]:
     return [f"n{start + i}" for i in range(count)]
 
 
+def query_key(queries: list[str]) -> str:
+    return "|".join(sorted(" ".join(q.lower().split()) for q in queries))
+
+
 def code_base(parent: Node) -> str | None:
     """The code a child builds on: the parent's own version if it was supported (or is the
     baseline), else the code the parent started from, so refuted changes are not stacked."""
@@ -105,6 +127,10 @@ class HypothesisPhase:
         self.cfg = cfg or get_config()
 
     def limits(self, state: LiveRun) -> str:
+        if state.workspace is None:
+            return (f"1 to {self.cfg.research_queries_max} short search queries per hypothesis "
+                    f"(they search the user's vault and, if set up, the web); no file edits: "
+                    f"this run has no files.")
         ws = state.workspace
         where = "no files"
         if ws is not None:
@@ -139,18 +165,21 @@ class HypothesisPhase:
                 and n.status not in ("parked", "failed")]
         room = max(0, run.caps.branching - len(live))
         count = min(count or MAX_PER_EXPANSION, MAX_PER_EXPANSION, room)
-        if count == 0 or state.workspace is None:
+        if count == 0:
             host._log(state, parent.id, LogEntry(kind="decision", title="No new hypotheses",
                                                  text="The branching limit for this node is "
-                                                      "reached." if count == 0 else
-                                                 "This run has no files to change."))
+                                                      "reached."))
             return []
+        research = state.workspace is None
         view = RunView(run=run, nodes=state.nodes, findings=state.findings,
                        dead_ends=state.dead_ends, workspace=state.workspace)
         values = build_context(view, parent, self.cfg)
+        if research:
+            del values["code"], values["command"]
+        briefs = RESEARCH_BRIEFS if research else MODE_BRIEFS
         prompt = prompts.render(
-            "propose", count=count, mode=mode,
-            mode_brief=(MODE_BRIEFS.get(mode, "") + (f" {brief}" if brief else "")).strip(),
+            "propose_research" if research else "propose", count=count, mode=mode,
+            mode_brief=(briefs.get(mode, "") + (f" {brief}" if brief else "")).strip(),
             limits=self.limits(state), **values)
         runner = host._runner(state, parent, "hypothesis")
         out = await AgentSession(self.llm, self.cfg).run(
@@ -161,12 +190,16 @@ class HypothesisPhase:
             parent.tool_calls["hypothesis"] = parent.tool_calls.get("hypothesis", 0) + len(
                 out.records)
 
-        base = code_base(parent)
-        assert base is not None
-        seen = {fingerprint(n.edit): n.id for n in state.nodes if n.edit}
-        ok, failed = self._validate(state, base, out.value.hypotheses, seen)
-        if failed:
-            ok += await self._repair(host, state, parent, base, failed, seen)
+        if research:
+            base = None
+            ok = self._check_research(host, state, parent, out.value.hypotheses)
+        else:
+            base = code_base(parent)
+            assert base is not None
+            seen = {fingerprint(n.edit): n.id for n in state.nodes if n.edit}
+            ok, failed = self._validate(state, base, out.value.hypotheses, seen)
+            if failed:
+                ok += await self._repair(host, state, parent, base, failed, seen)
 
         kept, families = [], set()
         for p, edit, checked in ok:
@@ -184,6 +217,28 @@ class HypothesisPhase:
                        message="The agent proposed no hypothesis that could be applied.")
             return []
         return await self._create_and_score(host, state, parent, base, kept)
+
+    def _check_research(self, host: RunManager, state: LiveRun, parent: Node,
+                        proposals: list[ProposedHypothesis]) -> list:
+        """A research hypothesis needs at least one query and must not repeat earlier searches
+        (there is nothing to repair, so failures are just dropped and logged)."""
+        seen = {query_key(n.hypothesis.queries) for n in state.nodes
+                if n.hypothesis and n.hypothesis.queries}
+        ok = []
+        for p in proposals:
+            queries = [q.strip()[:200] for q in p.queries if q.strip()]
+            queries = queries[: self.cfg.research_queries_max]
+            problem = ("it has no search queries" if not queries
+                       else "it repeats earlier searches" if query_key(queries) in seen else "")
+            if problem:
+                host._log(state, parent.id, LogEntry(
+                    kind="error", title=f"Dropped a '{family_slug(p.family)}' hypothesis",
+                    text=f"{p.statement}\nWhy: {problem}."))
+                continue
+            seen.add(query_key(queries))
+            p.queries = queries
+            ok.append((p, None, None))
+        return ok
 
     async def _repair(self, host: RunManager, state: LiveRun, parent: Node, base: str,
                       failed: list, seen: dict[str, str]) -> list:
@@ -210,7 +265,7 @@ class HypothesisPhase:
         return ok
 
     async def _create_and_score(self, host: RunManager, state: LiveRun, parent: Node,
-                                base: str, kept: list) -> list[Node]:
+                                base: str | None, kept: list) -> list[Node]:
         run = state.run
         earlier = [n.description for n in state.nodes]
         ids = next_node_ids(state.nodes, len(kept))
@@ -218,26 +273,30 @@ class HypothesisPhase:
         for node_id, (p, edit, checked, family) in zip(ids, kept, strict=True):
             node = Node(
                 id=node_id, run_id=run.id, parent_id=parent.id, depth=parent.depth + 1,
-                type="hypothesis", description=f"{p.statement} Experiment: "
-                                               f"{p.planned_experiment}".strip(),
+                type="hypothesis", description=(f"{p.statement} Experiment: "
+                                                f"{p.planned_experiment}".strip()
+                                                + (f" Searches: {'; '.join(p.queries)}"
+                                                   if checked is None else "")),
                 status="pending", phase="hypothesis", family=family,
                 summary=p.statement,
                 hypothesis=HypothesisSpec(statement=p.statement, rationale=p.rationale,
                                           family=family,
                                           planned_experiment=p.planned_experiment,
                                           expected_signal=p.expected_signal,
-                                          measures=p.measures),
-                edit=edit, base_version=base, version=checked.version)
+                                          measures=p.measures,
+                                          queries=p.queries if checked is None else []),
+                edit=edit, base_version=base, version=checked.version if checked else None)
             state.nodes.append(node)
             nodes.append(node)
             host._emit(state, NodeCreated, node=node)
-            stats = edit.stats
+            stats = edit.stats if edit else None
+            detail = (f"\nChange: {stats.files} file(s), +{stats.added}/-{stats.removed} lines"
+                      if stats else f"\nSearches: {'; '.join(p.queries)}" if p.queries else "")
             host._log(state, node.id, LogEntry(
                 kind="decision", title="Proposed and validated",
-                text=(f"{p.statement}\nWhy: {p.rationale}\nExperiment: {p.planned_experiment}"
-                      f"\nChange: {stats.files} file(s), +{stats.added}/-{stats.removed} lines"
-                      if stats else p.statement)
-                     + ("\n" + "\n".join(checked.notes) if checked.notes else ""),
+                text=f"{p.statement}\nWhy: {p.rationale}\nExperiment: {p.planned_experiment}"
+                     + detail
+                     + ("\n" + "\n".join(checked.notes) if checked and checked.notes else ""),
                 phase="hypothesis"))
 
         await host._checkpoint(state)

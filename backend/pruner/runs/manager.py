@@ -35,10 +35,11 @@ files (workspace/workspace.py; they are edited in place later), then the objecti
 the run command is taken from the user's own text (runs/command.py). If no command can be verified,
 the run asks for it (a "command" question) and waits until it is answered.
 
-Orchestrator: a run with `paths`, given an orchestrator, is handed to it (orchestrator/loop.py):
-it owns the tree and calls back here for events, logs, level boundaries, the pause gate and the
-abortable step (_step), so pause, stop and instructions behave the same. Runs without files keep
-the single agent turn (_single_turn).
+Orchestrator: given an orchestrator, every run is handed to it (orchestrator/loop.py): it owns
+the tree and calls back here for events, logs, level boundaries, the pause gate and the abortable
+step (_step), so pause, stop and instructions behave the same. A run without files is a research
+run there (its experiments search for resources). Without an orchestrator a run is a single
+agent turn (_single_turn).
 
 Tools: with a vault store, the agent's step gets its tools (agent/tools.py phase_tools) through a
 ToolRunner. Every call is logged on the node with the reason the agent gave (node_log events,
@@ -58,8 +59,10 @@ amend agent's fork requests become suggestions too. resolve_suggestion confirms 
 Changes made outside the agent's step are copied onto the level-boundary tree (_mirror), so an
 aborted step's rewind, or a reload, keeps them.
 
-Not built yet: pushing events to connected clients (the SSE stream), and acting on a finished run
-(node actions, instructions and suggestions are refused once it ended).
+Every event is also published to self.bus, which GET /runs/{id}/events streams (runs/stream.py).
+
+Not built yet: acting on a finished run (node actions, instructions and suggestions are refused
+once it ended).
 """
 
 from __future__ import annotations
@@ -126,6 +129,7 @@ from pruner.orchestrator.steering import Job, job_for
 from pruner.runs.command import verify_command
 from pruner.runs.objectives import ObjectiveMaker
 from pruner.runs.store import RunStore
+from pruner.runs.stream import EventBus
 from pruner.vault.store import VaultStore
 from pruner.workspace.workspace import Workspace
 
@@ -138,15 +142,19 @@ T = TypeVar("T")
 
 
 class Emitter:
-    """Numbers a run's events (from 1) and appends them to the store."""
+    """Numbers a run's events (from 1), appends them to the store, then publishes them to the
+    run's live streams (runs/stream.py)."""
 
-    def __init__(self, store: RunStore, run_id: str, last_seq: int = 0) -> None:
-        self.store, self.run_id, self.seq = store, run_id, last_seq
+    def __init__(self, store: RunStore, run_id: str, last_seq: int = 0,
+                 bus: EventBus | None = None) -> None:
+        self.store, self.run_id, self.seq, self.bus = store, run_id, last_seq, bus
 
     def emit(self, cls: type[EventBase], **fields) -> EventBase:
         self.seq += 1
         event = cls(seq=self.seq, run_id=self.run_id, **fields)
         self.store.append_event(event)  # type: ignore[arg-type]
+        if self.bus is not None:
+            self.bus.publish(event)
         return event
 
 
@@ -201,6 +209,7 @@ class LiveRun:
     focus: str | None = None  # a node the orchestrator should run next (a confirmed suggestion)
     suggestions: list[Suggestion] = field(default_factory=list)
     jobs: list[Job] = field(default_factory=list)  # expansions a person asked for, run first
+    concluded_from: str | None = None  # the node the run's answer branches from (the last judged)
     level: int = 0  # depth of the level in progress
     level_start: RunSnapshot | None = None  # the tree when that level was created
     step: asyncio.Task | None = None  # the agent's step in flight, which an instruction aborts
@@ -233,11 +242,13 @@ class RunManager:
                  cfg: Config | None = None, *,
                  amender: AmendObjectivesAgent | None = None,
                  vault: VaultStore | None = None,
-                 orchestrator: Orchestrator | None = None) -> None:
+                 orchestrator: Orchestrator | None = None,
+                 bus: EventBus | None = None) -> None:
         self.store, self.agent, self.objectives, self.amender = store, agent, objectives, amender
         self.vault = vault  # gives the agent its tools; without it the agent answers from the prompt
         self.orchestrator = orchestrator  # runs with files go through it (orchestrator/loop.py)
         self.cfg = cfg or get_config()
+        self.bus = bus or EventBus()  # live events for GET /runs/{id}/events
         self._live: dict[str, LiveRun] = {}
 
     def _new_run(self, req: StartRunRequest) -> Run:
@@ -284,7 +295,7 @@ class RunManager:
         start = self.store.level_start(run_id)
         nodes = [n.model_copy(deep=True) for n in (start or snap).nodes]
         state = LiveRun(run=snap.run, emitter=Emitter(self.store, run_id,
-                                                      self.store.last_seq(run_id)),
+                                                      self.store.last_seq(run_id), self.bus),
                         nodes=nodes, dead_ends=list(snap.dead_ends),
                         questions=list(snap.questions), findings=list(snap.findings),
                         suggestions=list(snap.suggestions), level_start=start, level=max((n.depth for n in nodes), default=0),
@@ -377,7 +388,8 @@ class RunManager:
     async def start(self, req: StartRunRequest) -> Run:
         """Create the run, record it, and start the agent in the background."""
         run = self._new_run(req)
-        state = LiveRun(run=run.model_copy(deep=True), emitter=Emitter(self.store, run.id))
+        state = LiveRun(run=run.model_copy(deep=True),
+                        emitter=Emitter(self.store, run.id, bus=self.bus))
         state.gate.set()
         self._live[run.id] = state
         state.emitter.emit(RunStarted, run=run)
@@ -539,7 +551,7 @@ class RunManager:
         if action != "restore":
             return
         state.emitter.emit(RunUpdated, run=state.run)  # nodes_restored
-        if node.experiment is not None and state.workspace is not None:
+        if node.experiment is not None and self.orchestrator is not None:
             node.closed = False
             self._mirror(state, node)
             state.jobs.append(Job(node.id, "more_experiments",
@@ -677,7 +689,7 @@ class RunManager:
         instruction.active = active
         state.emitter.emit(RunUpdated, run=state.run)
         self._save(state)
-        if self.orchestrator is not None and state.workspace is not None:
+        if self.orchestrator is not None:
             state.amends_open += 1
             state.amends_idle.clear()
             self._spawn(state, self._amend(
@@ -734,7 +746,9 @@ class RunManager:
         await self.cancel(run_id)
         if state is not None:
             await asyncio.to_thread(self._settle_files, state)
-        return self.store.mark_stopped(run_id, state.snapshot() if state else None)
+        event = self.store.mark_stopped(run_id, state.snapshot() if state else None)
+        self.bus.publish(event)  # ends the run's open streams
+        return event
 
     async def wait(self, run_id: str) -> None:
         """Wait until every task of the run is finished (used by tests and shutdown)."""
@@ -753,7 +767,7 @@ class RunManager:
                     forks = []
                     if instruction is not None:
                         forks = await self._amend_objectives(state, instruction)
-                    if self.orchestrator is not None and state.workspace is not None:
+                    if self.orchestrator is not None:
                         await self.orchestrator.steer(
                             self, state, change=change, forks=forks,
                             instruction_id=instruction.id if instruction else instruction_id)
@@ -847,7 +861,7 @@ class RunManager:
         try:
             single = None
             with self._scopes(run.id):
-                if self.orchestrator is not None and run.paths:
+                if self.orchestrator is not None:
                     await self.orchestrator.run(self, state)
                 else:
                     single = await self._single_turn(state)

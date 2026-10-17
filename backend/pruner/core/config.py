@@ -73,6 +73,15 @@ class Config:
     max_diff_lines: int  # added + removed lines
     max_edit_files: int
     max_edits: int  # search/replace edits plus new files
+    # Reuse an experiment's result when the same code version runs the same command in the same
+    # root again (or the same research searches run again): a warm re-run makes no command runs.
+    # Off by default, since files outside the editable set (data, dependencies) can change.
+    experiment_cache: bool
+    # Research runs (no files): an experiment searches the vault and, if a search API is set up,
+    # the web, with the hypothesis's queries.
+    research_queries_max: int  # queries per hypothesis
+    research_hits_per_query: int  # web results kept per query
+    research_fetch_pages: int  # top web results whose page text is fetched as an excerpt
 
     # --- Scoring thresholds (on the judges' 1 to 10 scale; tune on the demo question) ---
     pre_score_min: float  # candidates with an overall score below this are parked
@@ -148,6 +157,10 @@ def get_config() -> Config:
         max_diff_lines=_env_int("MAX_DIFF_LINES", 40),
         max_edit_files=_env_int("MAX_EDIT_FILES", 3),
         max_edits=_env_int("MAX_EDITS", 6),
+        experiment_cache=_env("EXPERIMENT_CACHE", "0").lower() in ("1", "true", "yes"),
+        research_queries_max=_env_int("RESEARCH_QUERIES_MAX", 3),
+        research_hits_per_query=_env_int("RESEARCH_HITS_PER_QUERY", 3),
+        research_fetch_pages=_env_int("RESEARCH_FETCH_PAGES", 2),
         pre_score_min=_env_float("PRE_SCORE_MIN", 2.0),
         run_score_min=_env_float("RUN_SCORE_MIN", 6.0),
         post_score_min=_env_float("POST_SCORE_MIN", 4.0),

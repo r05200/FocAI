@@ -10,6 +10,9 @@ run(node):
      run created or changed; otherwise the experiment counts as failed ("no result JSON");
   4. flattens the result's numbers into `metrics` (dotted keys, e.g. "latency.p50").
 A non-zero exit, a timeout or a missing result makes `error` set; the caller marks the node.
+With cfg.experiment_cache on, a successful result is reused when the same code version runs the
+same command in the same root again (the files are still put in place; the command is skipped).
+Runs without files use orchestrator/research.py instead; describe() renders both kinds.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from pruner.core.config import Config, get_config
+from pruner.core.llm import DiskCache
 from pruner.core.models import ExperimentRun, RunCommand
 from pruner.runs.command import runnable
 from pruner.workspace.paths import SKIP_DIRS, PathError
@@ -105,13 +109,31 @@ def find_result(ws: Workspace, command: RunCommand, stdout: str,
     return None, f"no result JSON found: {where}"
 
 
+def experiment_cache(cfg: Config) -> DiskCache | None:
+    """Where experiment results are reused from, when cfg.experiment_cache is on."""
+    return DiskCache(cfg.cache_dir / "experiments") if cfg.experiment_cache else None
+
+
 class ExperimentPhase:
     def __init__(self, cfg: Config | None = None, runner: Runner = run_command) -> None:
         self.cfg = cfg or get_config()
         self.runner = runner
+        self.cache = experiment_cache(self.cfg)
 
     async def run(self, ws: Workspace, command: RunCommand, version: str) -> ExperimentRun:
+        """The files are always put in place; the command itself is skipped when an identical
+        experiment (same code version, command and root) succeeded before and the cache is on."""
         await asyncio.to_thread(ws.apply_version, version)
+        key = DiskCache.key({"kind": "command", "version": version, "command": command.text,
+                             "result_file": command.result_file, "root": str(ws.roots.root)})
+        if self.cache is not None and (hit := self.cache.get(key)) is not None:
+            return ExperimentRun.model_validate({**hit, "cached": True})
+        run = await self._run(ws, command)
+        if self.cache is not None and run.error is None:
+            self.cache.set(key, run.model_dump())
+        return run
+
+    async def _run(self, ws: Workspace, command: RunCommand) -> ExperimentRun:
         before = await asyncio.to_thread(json_mtimes, ws.roots.root)
         result = await self.runner(runnable(command.text), ws.roots.root,
                                    timeout_s=command.timeout_s or self.cfg.experiment_timeout_s,
@@ -136,8 +158,26 @@ class ExperimentPhase:
 
 def describe(run: ExperimentRun) -> str:
     """A compact text of an experiment for prompts and Node.result."""
+    resources = (run.result or {}).get("resources")
+    if isinstance(resources, list):  # a research experiment (orchestrator/research.py)
+        return describe_resources(run, resources)
     if run.error:
         tail = (run.stderr_tail or run.stdout_tail).strip()[-800:]
         return f"FAILED: {run.error}." + (f"\nOutput:\n{tail}" if tail else "")
     metrics = ", ".join(f"{k}={v:g}" for k, v in list(run.metrics.items())[:30])
     return f"Measured in {run.duration_s:.1f}s: {metrics or json.dumps(run.result)[:800]}"
+
+
+def describe_resources(run: ExperimentRun, resources: list) -> str:
+    lines = []
+    for r in resources[:12]:
+        if r.get("source") == "vault":
+            lines.append(f"- [vault {r.get('id')}, {r.get('person')}, similarity "
+                         f"{r.get('similarity', 0):.2f}] {r.get('title')}: {r.get('summary')}")
+        else:
+            lines.append(f"- [web] {r.get('title')} ({r.get('url')}): {r.get('snippet')}"
+                         + (f"\n  Excerpt: {r['excerpt'][:600]}" if r.get("excerpt") else ""))
+    head = (f"FAILED: {run.error}." if run.error
+            else f"Found {len(resources)} resource(s) for: {run.command}")
+    notes = (run.result or {}).get("notes") or []
+    return "\n".join([head, *lines, *(f"({n})" for n in notes)])
