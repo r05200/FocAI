@@ -28,6 +28,10 @@ steer(), which re-rates the tree in one batched call and offers suggestions
 (orchestrator/steering.py). A person's keep/park/restore is applied by the manager
 (orchestrator/human.py); the loop just sees the new statuses.
 
+Recovery: after a server restart the manager reloads a running run paused, from the last level
+boundary that was saved (RunManager.recover); resuming calls run() again, which skips every stage
+the saved tree already has (objectives, root, baseline, first expansion).
+
 The orchestrator never touches the run's bookkeeping directly: it uses the manager (events,
 logs, level boundaries, the pause gate, the abortable step).
 """
@@ -106,40 +110,53 @@ class Orchestrator:
     async def run(self, host: RunManager, state: LiveRun) -> None:
         run, emitter = state.run, state.emitter
         await host._checkpoint(state)
-        attachments = await host._setup_files(state)
-        spec = next((i.text for i in run.instructions if i.kind == "spec"), "")
-        run.objectives, candidate = await host.objectives.create_full(
-            question=run.question, spec=spec, directives=run.directives, attachments=attachments)
-        emitter.emit(ObjectivesUpdated, objectives=run.objectives)
-        await host._settle_command(state, candidate, attachments)
-
-        if state.workspace is None:
-            root = Node(id="n1", run_id=run.id, type="reading", status="done", phase="complete",
-                        description=run.question, summary="the question (a research run: no "
-                                                          "files)", decided_by="agent")
-            state.nodes.append(root)
-            emitter.emit(NodeCreated, node=root)
-            emitter.emit(Activity, node_id=root.id, message=(
-                "No files were given, so this is a research run: hypotheses guess what you want "
-                "to see, and experiments search " + ("the vault and the web" if
-                                                     self.research.web_ready() else
-                                                     "the vault (web search is not set up)")
-                + " for resources."))
-            host._boundary(state)
+        if not run.objectives:  # a fresh run (a recovered one already has them)
+            attachments = await host._setup_files(state)
+            spec = next((i.text for i in run.instructions if i.kind == "spec"), "")
+            run.objectives, candidate = await host.objectives.create_full(
+                question=run.question, spec=spec, directives=run.directives,
+                attachments=attachments)
+            emitter.emit(ObjectivesUpdated, objectives=run.objectives)
+            await host._settle_command(state, candidate, attachments)
         else:
-            root = Node(id="n1", run_id=run.id, type="experiment", status="pending",
-                        phase="experiment", description="Baseline: the files as given, before "
-                                                        "any change.",
-                        summary="baseline (the original files)",
-                        version=state.workspace.info.baseline_version)
-            state.nodes.append(root)
-            emitter.emit(NodeCreated, node=root)
+            await host._need_command(state)
+
+        # Each stage below is skipped when the saved tree already has it, so a run reloaded after
+        # a server restart carries on from the last level boundary that was written.
+        root = next((n for n in state.nodes if n.parent_id is None), None)
+        if root is None:
+            if state.workspace is None:
+                root = Node(id="n1", run_id=run.id, type="reading", status="done",
+                            phase="complete", description=run.question,
+                            summary="the question (a research run: no files)",
+                            decided_by="agent")
+                state.nodes.append(root)
+                emitter.emit(NodeCreated, node=root)
+                emitter.emit(Activity, node_id=root.id, message=(
+                    "No files were given, so this is a research run: hypotheses guess what you "
+                    "want to see, and experiments search "
+                    + ("the vault and the web" if self.research.web_ready()
+                       else "the vault (web search is not set up)") + " for resources."))
+            else:
+                root = Node(id="n1", run_id=run.id, type="experiment", status="pending",
+                            phase="experiment", description="Baseline: the files as given, "
+                                                            "before any change.",
+                            summary="baseline (the original files)",
+                            version=state.workspace.info.baseline_version)
+                state.nodes.append(root)
+                emitter.emit(NodeCreated, node=root)
             host._boundary(state)
+        if state.workspace is not None and root.experiment is None:
+            root.status = "pending"
             await host._step(state, lambda: self._baseline(host, state, root))
             host._boundary(state)
-        await host._step(state, lambda: self.hypothesis.expand(host, state, root,
-                                                               mode="initial"))
-        host._boundary(state)
+        if not any(n.parent_id == root.id for n in state.nodes):
+            await host._step(state, lambda: self.hypothesis.expand(host, state, root,
+                                                                   mode="initial"))
+            host._boundary(state)
+        judged = [n for n in state.nodes if n.synthesis is not None]
+        if state.concluded_from is None and judged:
+            state.concluded_from = judged[-1].id
 
         while True:
             await host._checkpoint(state)
@@ -319,14 +336,23 @@ class Orchestrator:
 
     # ---- the end
 
-    def settle_files(self, host: RunManager, state: LiveRun) -> Node | None:
-        """Leave the best supported version applied (the originals if none) and save the patch.
-        Also used when a run is stopped or fails, so no half-tried change stays in the files."""
+    def restore_files(self, state: LiveRun) -> Node | None:
+        """Write the best supported version (the originals if none) to the user's files, so no
+        half-tried change stays. Used when a run ends and when a crashed run is recovered."""
         ws = state.workspace
         if ws is None:
             return None
         best = best_node(state.nodes)
         ws.apply_version(best.version if best and best.version else ws.info.baseline_version)
+        return best
+
+    def settle_files(self, host: RunManager, state: LiveRun) -> Node | None:
+        """Leave the best supported version applied (the originals if none) and save the patch.
+        Also used when a run is stopped or fails, so no half-tried change stays in the files."""
+        best = self.restore_files(state)
+        ws = state.workspace
+        if ws is None:
+            return None
         state.run.best_node_id = best.id if best else None
         host.store.save_patch(state.run.id, ws.patch())
         state.run.patch_ready = True
@@ -366,6 +392,10 @@ class Orchestrator:
 
     def _conclude(self, host: RunManager, state: LiveRun) -> Node:
         """The answer as a conclusion node, a child of the node the run ended on."""
+        existing = next((n for n in state.nodes if n.type == "conclusion"), None)
+        if existing is not None:  # a run recovered after its answer was already written
+            existing.result = state.run.final_answer
+            return existing
         by_id = {n.id: n for n in state.nodes}
         parent = (by_id.get(state.concluded_from or "")
                   or next(n for n in state.nodes if n.parent_id is None))

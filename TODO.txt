@@ -30,9 +30,8 @@ it needs, and what milestone or session it came from.
     New routes: GET /api/runs/{id}/questions, POST /api/runs/{id}/questions/{qid}/answer,
     GET /api/runs/{id}/nodes/{node_id}/logs, GET|POST /api/runs/{id}/vault.
 
-[ ] On server start, mark runs left "running" by a crash as failed and restore their baseline
-    backup (data/work/<run_id>/baseline) so no half-tried edit stays in the user's files.
-    (planned, not built in M1)
+[x] DONE (changed: not failed but PAUSED): on server start, runs left "running" are reloaded
+    paused from their last saved state; resume continues them (see the recovery section below).
 
 [ ] After every backend change to models/events: cd backend && uv run python -m pruner.fixtures
     (regenerates frontend/src/fixtures/*.json, which tests/test_fixtures.py checks).
@@ -149,5 +148,18 @@ it needs, and what milestone or session it came from.
     Search API). BraveSearch is unit-tested against a mocked response only, not the live API.
     Without it research experiments search only the vault.
 
-[ ] A run left "running" by a server crash streams pings forever (nothing will finish it); part
-    of the crash-recovery item above.
+[x] A run left "running" by a crash now comes back paused (it pings until resumed or stopped).
+
+--- Crash recovery and path locks ----------------------------------------------------------------
+
+[ ] Frontend: after a server restart a run that was running is status "running" with
+    paused=true and an activity line "The server restarted..."; POST /runs/{id}/resume carries it
+    on (the step that was running starts again), POST /runs/{id}/stop ends it. A run that was
+    waiting for its command still shows its open question; answering it and resuming continues.
+    POST /api/runs answers 409 when a path (or a folder around or inside it) is held by another
+    running run; the lock is released when that run is done, failed or stopped.
+
+[ ] Known limits of recovery: it reloads the last saved level (a step in flight is redone, so its
+    LLM calls repeat unless cached); confirmed-suggestion jobs and the run-vault ideas of the lost
+    step are not rewound (a rerun can add a duplicate idea); path locks are per server process
+    (several uvicorn workers would not share them).

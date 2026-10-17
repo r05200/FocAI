@@ -19,7 +19,13 @@ from pruner.core.models import (
     StartRunRequest,
     StopResult,
 )
-from pruner.runs.manager import InstructionLocked, ObjectivesNotReady, RunManager, RunNotRunning
+from pruner.runs.manager import (
+    InstructionLocked,
+    ObjectivesNotReady,
+    PathLocked,
+    RunManager,
+    RunNotRunning,
+)
 from pruner.runs.store import RunStore
 from pruner.runs.stream import run_events
 
@@ -34,8 +40,13 @@ async def start_run(body: StartRunRequest, manager: Manager) -> Run:
     """Send the prompt: create the run and spin up the agent in the background. The run's
     objectives are written from `spec` first, then the agent works on `question`. Follow it live
     with GET /runs/{id}/events, or poll GET /runs/{id}. With `paths` the run edits those files
-    and runs the user's command; without, it is a research run that searches for resources."""
-    return await manager.start(body)
+    and runs the user's command; without, it is a research run that searches for resources.
+    409 if another running run already holds one of the `paths` (or a folder around or inside
+    it): paths are locked until that run finishes or is stopped."""
+    try:
+        return await manager.start(body)
+    except PathLocked as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
 
 @router.get("")

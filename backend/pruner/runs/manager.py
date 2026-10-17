@@ -61,6 +61,12 @@ aborted step's rewind, or a reload, keeps them.
 
 Every event is also published to self.bus, which GET /runs/{id}/events streams (runs/stream.py).
 
+Server restart (recover): runs saved as "running" are reloaded paused from their last saved
+state, their path locks are taken again, and resume() starts them again.
+
+Path locks: a run with `paths` locks them from start() until it ends (done, failed or stopped); a
+second run asking for the same path, a path inside it, or a folder around it gets PathLocked.
+
 Not built yet: acting on a finished run (node actions, instructions and suggestions are refused
 once it ended).
 """
@@ -70,6 +76,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import os
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import ExitStack
@@ -170,6 +177,21 @@ class QuestionClosed(ValueError):
     """The question was already answered."""
 
 
+class PathLocked(ValueError):
+    """A path the run asked for is already in use by another running run."""
+
+    def __init__(self, path: str, holder: str) -> None:
+        super().__init__(f"{path} is already in use by run {holder}; wait for it to finish or "
+                         f"stop it")
+        self.path, self.holder = path, holder
+
+
+def _overlaps(a: str, b: str) -> bool:
+    """The same path, or one inside the other (a folder locks everything under it)."""
+    a, b = a.rstrip(os.sep), b.rstrip(os.sep)
+    return a == b or a.startswith(b + os.sep) or b.startswith(a + os.sep)
+
+
 class SuggestionClosed(ValueError):
     """The suggestion was already confirmed, dismissed or replaced."""
 
@@ -210,6 +232,7 @@ class LiveRun:
     suggestions: list[Suggestion] = field(default_factory=list)
     jobs: list[Job] = field(default_factory=list)  # expansions a person asked for, run first
     concluded_from: str | None = None  # the node the run's answer branches from (the last judged)
+    recovered: bool = False  # reloaded after a server restart: paused, with no task until resumed
     level: int = 0  # depth of the level in progress
     level_start: RunSnapshot | None = None  # the tree when that level was created
     step: asyncio.Task | None = None  # the agent's step in flight, which an instruction aborts
@@ -250,6 +273,22 @@ class RunManager:
         self.cfg = cfg or get_config()
         self.bus = bus or EventBus()  # live events for GET /runs/{id}/events
         self._live: dict[str, LiveRun] = {}
+        self._locks: dict[str, str] = {}  # a path some running run works on -> that run's id
+
+    # ---- path locks
+
+    def _lock_paths(self, run_id: str, paths: list[str]) -> None:
+        """Lock the run's paths for as long as it is running. PathLocked (nothing locked) if
+        any of them is the same as, inside, or around a path another running run holds."""
+        for path in paths:
+            for held, owner in self._locks.items():
+                if owner != run_id and _overlaps(path, held):
+                    raise PathLocked(path, owner)
+        for path in paths:
+            self._locks[path] = run_id
+
+    def release_paths(self, run_id: str) -> None:
+        self._locks = {p: owner for p, owner in self._locks.items() if owner != run_id}
 
     def _new_run(self, req: StartRunRequest) -> Run:
         people = req.people or [req.primary_person]
@@ -272,7 +311,7 @@ class RunManager:
 
         def done(t: asyncio.Task) -> None:
             state.tasks.discard(t)
-            if not state.tasks:
+            if not state.tasks and not state.recovered:
                 self._live.pop(state.run.id, None)
 
         task.add_done_callback(done)
@@ -299,7 +338,7 @@ class RunManager:
                         nodes=nodes, dead_ends=list(snap.dead_ends),
                         questions=list(snap.questions), findings=list(snap.findings),
                         suggestions=list(snap.suggestions), level_start=start, level=max((n.depth for n in nodes), default=0),
-                        workspace=Workspace.load(run_id, self.cfg) if snap.run.paths else None)
+                        workspace=Workspace.load(run_id, self.cfg) if snap.run.workspace else None)
         if not snap.run.paused:
             state.gate.set()
         self._live[run_id] = state
@@ -385,9 +424,62 @@ class RunManager:
             stack.enter_context(llm.scope(run_id))
         return stack
 
+    async def recover(self) -> list[str]:
+        """Call once at server start. Every run saved as "running" lost its task in the restart:
+        it is reloaded from the last saved state (the start of its current level, see _running),
+        its paths are locked again, the user's files are put back to the best change so far (or
+        the originals), and it is left PAUSED. Resume it to carry on from there (resume()
+        starts the orchestrator again; it skips what the saved tree already has). A run that
+        cannot come back (no orchestrator, or its paths are held by an earlier recovered run) is
+        stopped instead. Returns the ids of the runs left paused."""
+        paused: list[str] = []
+        for run in self.store.list():
+            if run.status != "running" or run.id in self._live:
+                continue
+            try:
+                if self.orchestrator is None:
+                    self.store.mark_stopped(run.id)
+                    continue
+                state = self._running(run.id)
+                try:
+                    self._lock_paths(run.id, run.paths)
+                except PathLocked as e:
+                    log.warning("not recovering run %s: %s", run.id, e)
+                    self._live.pop(run.id, None)
+                    self.store.mark_stopped(run.id)
+                    continue
+                judged = {n.id for n in state.nodes if n.synthesis is not None}
+                known = {n.id for n in state.nodes}
+                # what the lost step had logged would be logged again when it re-runs
+                state.findings = [f for f in state.findings
+                                  if f.node_id is None or f.node_id in judged]
+                state.dead_ends = [d for d in state.dead_ends if d.node_id in known]
+                state.recovered = True
+                state.gate.clear()
+                state.run.paused = True
+                if state.workspace is not None:
+                    await asyncio.to_thread(self._restore_files, state)
+                state.emitter.emit(Activity, message=(
+                    "The server restarted: this run is paused at the last saved state (the step "
+                    "that was running starts again). Resume it to carry on."))
+                self._save(state)
+                paused.append(run.id)
+            except Exception:
+                log.exception("could not recover run %s", run.id)
+        return paused
+
+    def _restore_files(self, state: LiveRun) -> None:
+        try:
+            assert self.orchestrator is not None
+            self.orchestrator.restore_files(state)
+        except (OSError, KeyError):
+            log.exception("could not restore the files of run %s", state.run.id)
+
     async def start(self, req: StartRunRequest) -> Run:
-        """Create the run, record it, and start the agent in the background."""
+        """Create the run, record it, and start the agent in the background. PathLocked if
+        another running run already holds one of its paths."""
         run = self._new_run(req)
+        self._lock_paths(run.id, run.paths)
         state = LiveRun(run=run.model_copy(deep=True),
                         emitter=Emitter(self.store, run.id, bus=self.bus))
         state.gate.set()
@@ -425,6 +517,24 @@ class RunManager:
         if waiter is not None and not waiter.done():
             waiter.set_result(answer)
         return question
+
+    async def _need_command(self, state: LiveRun) -> None:
+        """For a recovered run: wait for the command question that was open when the server
+        stopped (or ask it again if it never got asked)."""
+        run = state.run
+        if state.workspace is None or run.command is not None:
+            return
+        pending = next((q for q in state.questions
+                        if q.purpose == "command" and q.status == "pending"), None)
+        if pending is None:
+            await self._ask(state, f"What command runs one experiment in "
+                                   f"{state.workspace.roots.root}? Type it exactly as it should "
+                                   f"run, e.g. `python bench.py`; it should print or write a "
+                                   f"JSON result.", "command")
+            return
+        waiter = asyncio.get_running_loop().create_future()
+        state.answers[pending.id] = waiter
+        await waiter
 
     async def _ask(self, state: LiveRun, text: str, purpose: str) -> str:
         """Ask the run's primary person a question and wait for the answer (Stop cancels it)."""
@@ -717,6 +827,9 @@ class RunManager:
             state.gate.set()
             state.emitter.emit(Activity, message="Resumed.")
             self._save(state)
+        if state.recovered:  # reloaded after a restart: nothing is running until now
+            state.recovered = False
+            self._spawn(state, self._run(state))
         return state.run
 
     @staticmethod
@@ -748,6 +861,8 @@ class RunManager:
             await asyncio.to_thread(self._settle_files, state)
         event = self.store.mark_stopped(run_id, state.snapshot() if state else None)
         self.bus.publish(event)  # ends the run's open streams
+        self.release_paths(run_id)
+        self._live.pop(run_id, None)
         return event
 
     async def wait(self, run_id: str) -> None:
@@ -856,6 +971,13 @@ class RunManager:
         return root, result
 
     async def _run(self, state: LiveRun) -> None:
+        try:
+            await self._run_inner(state)
+        finally:
+            if state.run.status != "running":  # done or failed (stop() releases its own)
+                self.release_paths(state.run.id)
+
+    async def _run_inner(self, state: LiveRun) -> None:
         run, emitter, nodes = state.run, state.emitter, state.nodes
         started = time.time()
         try:
