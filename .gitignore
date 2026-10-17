@@ -44,6 +44,5 @@ __pycache__/
 # Tests (kept local)
 backend/tests/
 
-# Runtime data (vaults and replays ARE committed)
-data/cache/
-data/runs/
+# Runtime data
+data/
