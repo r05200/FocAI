@@ -28,6 +28,16 @@ cd backend && uv sync
 cd ../frontend && npm install
 ```
 
+## Run
+
+```sh
+cd backend && uv run uvicorn pruner.api.app:app --reload --port 8000   # docs at /docs
+cd frontend && npm run dev
+```
+
+All routes under `/api` are declared with their request and response models but return `501`
+until built (only `/api/health` is live).
+
 ## Checks
 
 ```sh

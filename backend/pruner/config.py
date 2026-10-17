@@ -58,6 +58,9 @@ class Config:
     search_top_k: int
     neighbors_per_item: int  # edges per node in the mind map
 
+    # --- API ---
+    cors_origins: tuple[str, ...]  # the Vite dev server by default
+
     # --- Paths ---
     data_dir: Path
     cache_dir: Path
@@ -86,6 +89,11 @@ def get_config() -> Config:
         similarity_threshold=_env_float("SIMILARITY_THRESHOLD", 0.6),
         search_top_k=_env_int("SEARCH_TOP_K", 5),
         neighbors_per_item=_env_int("NEIGHBORS_PER_ITEM", 3),
+        cors_origins=tuple(
+            o.strip()
+            for o in _env("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
+            if o.strip()
+        ),
         data_dir=data_dir,
         cache_dir=data_dir / "cache",
         vault_dir=data_dir / "vaults",
