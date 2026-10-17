@@ -4,6 +4,10 @@ Layout under cfg.runs_dir (git-ignored):
   <run_id>/events.jsonl   every event, appended as it is emitted (durable even if the run dies)
   <run_id>/snapshot.json  the full RunSnapshot, rewritten atomically by save_snapshot()
   <run_id>/forks.jsonl    fork requests from the amend agent, appended (forking is not built)
+  <run_id>/level_start.json  the tree as it was when the current level was created (rewritten
+                          whenever a level is created or completed); a reload of an unfinished
+                          run goes back to it, so the nodes of the level in progress recover their
+                          original state
 
 If a run was cut off before a snapshot was saved, snapshot() rebuilds one from its events
 (nodes, questions and objectives; dead ends are only in saved snapshots).
@@ -27,12 +31,14 @@ from pruner.core.events import (
     RunStarted,
     parse_event,
 )
+from pruner.core.fs import write_atomic
 from pruner.core.models import ForkRequest, Node, Question, Run, RunSnapshot
 
 STOPPED_BY_USER = "Stopped by the user"
 EVENTS_FILE = "events.jsonl"
 FORKS_FILE = "forks.jsonl"
 SNAPSHOT_FILE = "snapshot.json"
+LEVEL_START_FILE = "level_start.json"
 _RUN_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")  # run ids become directory names
 
 
@@ -59,52 +65,53 @@ class RunStore:
     def __init__(self, directory: Path | None = None, cfg: Config | None = None) -> None:
         self.dir = directory or (cfg or get_config()).runs_dir
 
-    def _run_dir(self, run_id: str) -> Path | None:
-        return self.dir / run_id if _RUN_ID.match(run_id) else None
+    def _file(self, run_id: str, name: str) -> Path | None:
+        """A file in the run's folder, or None if `run_id` is not a safe folder name."""
+        return self.dir / run_id / name if _RUN_ID.match(run_id) else None
+
+    def _lines(self, run_id: str, name: str) -> list[str]:
+        path = self._file(run_id, name)
+        if path is None or not path.exists():
+            return []
+        return [line for line in path.read_text().splitlines() if line.strip()]
+
+    def _append(self, run_id: str, name: str, line: str) -> None:
+        path = self.dir / run_id / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as f:
+            f.write(line + "\n")
 
     # ---- writes
 
     def append_event(self, event: Event) -> None:
-        path = self.dir / event.run_id / EVENTS_FILE
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a") as f:
-            f.write(event.model_dump_json() + "\n")
+        self._append(event.run_id, EVENTS_FILE, event.model_dump_json())
 
     def save_snapshot(self, snapshot: RunSnapshot) -> None:
-        path = self.dir / snapshot.run.id / SNAPSHOT_FILE
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(snapshot.model_dump_json(indent=1))
-        tmp.replace(path)
+        write_atomic(self.dir / snapshot.run.id / SNAPSHOT_FILE, snapshot.model_dump_json(indent=1))
+
+    def save_level_start(self, snapshot: RunSnapshot) -> None:
+        write_atomic(self.dir / snapshot.run.id / LEVEL_START_FILE,
+                     snapshot.model_dump_json(indent=1))
 
     def append_fork(self, fork: ForkRequest) -> None:
-        path = self.dir / fork.run_id / FORKS_FILE
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a") as f:
-            f.write(fork.model_dump_json() + "\n")
+        self._append(fork.run_id, FORKS_FILE, fork.model_dump_json())
 
     def forks(self, run_id: str) -> list[ForkRequest]:
-        d = self._run_dir(run_id)
-        path = d / FORKS_FILE if d else None
-        if path is None or not path.exists():
-            return []
-        return [ForkRequest.model_validate_json(line)
-                for line in path.read_text().splitlines() if line.strip()]
+        return [ForkRequest.model_validate_json(line) for line in self._lines(run_id, FORKS_FILE)]
 
     def last_seq(self, run_id: str) -> int:
         return max((e.seq for e in self.events(run_id)), default=0)
 
-    def mark_stopped(self, run_id: str) -> RunFailed:
+    def mark_stopped(self, run_id: str, snapshot: RunSnapshot | None = None) -> RunFailed:
         """End a run the user stopped: append the final run_failed event ("Stopped by the user")
-        and save the snapshot with status "failed". Raises KeyError for an unknown run."""
-        snapshot = self.snapshot(run_id)
+        and save the tree as it is (`snapshot`, normally the run's live state; the last saved
+        one if not given) with status "failed". Raises KeyError for an unknown run."""
+        snapshot = snapshot or self.snapshot(run_id)
         if snapshot is None:
             raise KeyError(run_id)
-        events = self.events(run_id)
-        event = RunFailed(seq=max((e.seq for e in events), default=-1) + 1, run_id=run_id,
-                          error=STOPPED_BY_USER)
+        event = RunFailed(seq=self.last_seq(run_id) + 1, run_id=run_id, error=STOPPED_BY_USER)
         self.append_event(event)
-        run = snapshot.run.model_copy(update={"status": "failed"})
+        run = snapshot.run.model_copy(update={"status": "failed", "paused": False})
         self.save_snapshot(snapshot.model_copy(update={"run": run}))
         return event
 
@@ -112,21 +119,23 @@ class RunStore:
 
     def events(self, run_id: str, after: int = 0) -> list[Event]:
         """The run's saved events with seq greater than `after`, in order."""
-        d = self._run_dir(run_id)
-        path = d / EVENTS_FILE if d else None
-        if path is None or not path.exists():
-            return []
-        events = [parse_event(line) for line in path.read_text().splitlines() if line.strip()]
+        events = [parse_event(line) for line in self._lines(run_id, EVENTS_FILE)]
         return [e for e in events if e.seq > after]
 
     def snapshot(self, run_id: str) -> RunSnapshot | None:
-        d = self._run_dir(run_id)
-        if d is None:
+        saved = self._file(run_id, SNAPSHOT_FILE)
+        if saved is None:
             return None
-        saved = d / SNAPSHOT_FILE
         if saved.exists():
             return RunSnapshot.model_validate_json(saved.read_text())
         return rebuild_snapshot(self.events(run_id))
+
+    def level_start(self, run_id: str) -> RunSnapshot | None:
+        """The tree as it was when the run's current level was created, if one was saved."""
+        saved = self._file(run_id, LEVEL_START_FILE)
+        if saved is None or not saved.exists():
+            return None
+        return RunSnapshot.model_validate_json(saved.read_text())
 
     def list(self) -> list[Run]:
         """Every saved run, newest first."""

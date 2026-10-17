@@ -4,7 +4,7 @@ For one node that has run (node.result is set):
   1. Vault search: the chosen people's items close to the experiment and its result (nothing
      if nothing is close: cfg.similarity_threshold, at most cfg.search_top_k).
   2. One judge call (fast model): reason first, a 1..10 post_score (tenths, converted to 0..1),
-     and which objectives objectives the result advances, against the baseline and the user's
+     and which objectives the result advances, against the baseline and the user's
      instructions.
   3. The node is kept if its 1..10 post_score >= cfg.post_score_min or it advances any objective;
      otherwise it is parked (verdict park, restorable).

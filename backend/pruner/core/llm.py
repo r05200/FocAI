@@ -29,8 +29,9 @@ from typing import Any, Generic, Literal, TypeVar
 from pydantic import BaseModel, ValidationError
 
 from pruner.core.config import Config, get_config
+from pruner.core.fs import write_atomic
 
-log = logging.getLogger(__name__)
+log =logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -90,11 +91,7 @@ class DiskCache:
         return json.loads(path.read_text()) if path.exists() else None
 
     def set(self, key: str, value: dict[str, Any]) -> None:
-        path = self._path(key)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(value))
-        tmp.replace(path)
+        write_atomic(self._path(key), json.dumps(value))
 
 
 class LLM:
@@ -167,6 +164,9 @@ class LLM:
                 raise
             except errors.APIError as e:
                 if e.code not in RETRYABLE_STATUS or attempt == MAX_API_ATTEMPTS - 1:
+                    log.error("500 server issue: the Gemini API call failed (HTTP %s: %s). If "
+                              "this keeps happening, change GEMINI_API_KEY_%s in .env.",
+                              e.code, e.message, self.role.upper())
                     raise LLMError(f"Gemini API error {e.code}: {e.message}") from e
                 delay = 2**attempt
                 log.warning("Gemini API error %s, retrying in %ss", e.code, delay)

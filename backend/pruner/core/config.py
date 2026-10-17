@@ -52,8 +52,7 @@ class Config:
     branching: int
     node_budget: int
 
-    # --- Scoring thresholds (all 0..1, to be tuned on the demo question) ---
-    # All scoring thresholds are on the judges' 1 to 10 scale.
+    # --- Scoring thresholds (on the judges' 1 to 10 scale; tune on the demo question) ---
     pre_score_min: float  # candidates with an overall score below this are parked
     run_score_min: float  # at or above this a candidate runs; between the two is borderline
     post_score_min: float  # results scoring below this (and advancing no objective) are parked
@@ -65,10 +64,23 @@ class Config:
     # --- Vault ---
     similarity_threshold: float  # below this, vault search returns nothing
     search_top_k: int
+    # The agent's search_vault tool: the closest agent_search_top notes that are at least
+    # agent_search_threshold similar to the query (cosine of gemini-embedding-001 at 768 dims:
+    # ~0.93-0.96 for related items, ~0.70 off-topic). Their "contradicts" and "investigate" links
+    # come along (every one of them; the ingest link_threshold already keeps links close).
+    agent_search_threshold: float
+    agent_search_top: int
     neighbors_per_item: int  # max edges created when an item is ingested
-    # Min cosine similarity for an ingest-time edge. Arbitrary for now; gemini-embedding-001 at
-    # 768 dims gave ~0.93-0.96 for related items and ~0.70 for an off-topic one.
+    # Min cosine similarity for an ingest-time edge. gemini-embedding-001 at 768 dims gave
+    # ~0.93-0.96 for related items and ~0.70 for an off-topic one, so 0.7 links loosely related
+    # notes too; the vault LLM then drops pairs it judges "unrelated".
     link_threshold: float
+
+    # --- Agent tools (all read-only) ---
+    search_provider: str  # the web search API; "" = not set up yet (see pruner/agent/web.py)
+    search_api_key: str = field(repr=False)
+    fetch_timeout_s: float
+    fetch_max_chars: int  # page text is cut to this length
 
     # --- API ---
     cors_origins: tuple[str, ...]  # the Vite dev server by default
@@ -104,8 +116,14 @@ def get_config() -> Config:
         backtrack_below=_env_float("BACKTRACK_BELOW", 3.0),
         similarity_threshold=_env_float("SIMILARITY_THRESHOLD", 0.6),
         search_top_k=_env_int("SEARCH_TOP_K", 5),
+        agent_search_threshold=_env_float("AGENT_SEARCH_THRESHOLD", 0.85),
+        agent_search_top=_env_int("AGENT_SEARCH_TOP", 2),
         neighbors_per_item=_env_int("NEIGHBORS_PER_ITEM", 3),
-        link_threshold=_env_float("LINK_THRESHOLD", 0.8),
+        link_threshold=_env_float("LINK_THRESHOLD", 0.7),
+        search_provider=_env("SEARCH_PROVIDER", ""),
+        search_api_key=os.environ.get("SEARCH_API_KEY", ""),
+        fetch_timeout_s=_env_float("FETCH_TIMEOUT_S", 15.0),
+        fetch_max_chars=_env_int("FETCH_MAX_CHARS", 20_000),
         cors_origins=tuple(
             o.strip()
             for o in _env("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")

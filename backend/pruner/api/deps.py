@@ -67,11 +67,11 @@ def get_agent() -> Agent:
 
 
 @lru_cache(maxsize=1)
-def get_run_manager() -> RunManager:
-    return RunManager(get_run_store(), get_agent(), get_objective_maker(),
-                      amender=get_amend_agent())
+def get_amend_agent() -> AmendObjectivesAgent:
+    return AmendObjectivesAgent(get_prescorer(), get_run_store())
 
 
 @lru_cache(maxsize=1)
-def get_amend_agent() -> AmendObjectivesAgent:
-    return AmendObjectivesAgent(get_prescorer(), get_run_store())
+def get_run_manager() -> RunManager:
+    return RunManager(get_run_store(), get_agent(), get_objective_maker(),
+                      amender=get_amend_agent())

@@ -112,7 +112,8 @@ class _Emitter:
         self.events.append(cls(seq=len(self.events) + 1, run_id=RUN_ID, ts=T0 + dt, **kw))
 
 
-def _build() -> dict[str, Any]:
+def build_fixtures() -> dict[str, Any]:
+    """Filename -> JSON-serializable content."""
     items = _vault_items()
     objectives = [
         Objective(id="o1", text="Names the main families of KV-cache reduction techniques"),
@@ -187,8 +188,9 @@ def _build() -> dict[str, Any]:
     kv = kv.model_copy(deep=True, update={
         "status": "done", "post_score": 0.82, "criteria_progress": ["o1", "o2"],
         "result": "Three families: eviction, quantization, merging. Accuracy cost varies.",
-        "decision": Decision(verdict="keep", stage="post", vault_items_used=["v_a1"],
-                             reason="Advances the technique-families and accuracy-cost objectives."),
+        "decision": Decision(
+            verdict="keep", stage="post", vault_items_used=["v_a1"],
+            reason="Advances the technique-families and accuracy-cost objectives."),
         "decided_by": "agent", "tokens": TokenUsage(agent=1800, scorer=520),
     })
     ev.emit(NodeUpdated, 10, node=kv, change="done")
@@ -271,11 +273,6 @@ def _build() -> dict[str, Any]:
         "run_events.json": [e.model_dump(mode="json") for e in ev.events],
         "run_snapshot.json": snapshot.model_dump(mode="json"),
     }
-
-
-def build_fixtures() -> dict[str, Any]:
-    """Filename -> JSON-serializable content."""
-    return _build()
 
 
 def write_fixtures(directory: Path = FIXTURES_DIR) -> list[Path]:

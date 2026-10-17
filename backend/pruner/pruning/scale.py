@@ -1,6 +1,5 @@
 """The judges score on a 1 to 10 scale (tenths allowed, e.g. 7.3). Stored scores are 0..1, but
-every threshold in the config is written on the 1 to 10 scale and compared with to_ten(). Score n covers the band n-1 to n on the 10 scale (1 is 0 to 1, 2 is 1 to 2, ...),
-so a 10-scale score maps to 0..1 by dividing by 10 after rounding to a tenth."""
+every threshold in the config is written on the 1 to 10 scale and compared with to_ten()."""
 
 SCALE_MAX = 10.0
 

@@ -13,9 +13,8 @@ For one set of sibling candidates (the agent's proposals from one parent):
      may look ahead or ask a human); otherwise run. The UI can show low / medium / high by
      translating the number.
 
-Deterministic checks that run before this live in checks.py. The prescorer only judges: the
-agent loop decides what to do with the zones, usually by calling apply() on each node and then
-running the survivors. The judge never sees results; it rates how promising the next step is.
+The prescorer only judges: the agent loop decides what to do with the zones, usually by
+calling apply() on each node and then running the survivors. The judge never sees results; it rates how promising the next step is.
 
 TODO(agent loop): emit VaultRetrieved for PreScored.retrieved and bump retrieval_count.
 """
@@ -151,8 +150,9 @@ class PreScorer:
         and nodes that already ran and were kept, are left alone) and judges each by its topic
         against the new instructions, in one call. Unparking is lenient: a branch ends parked
         only if its overall score is under cfg.rescore_park_below, so anything fairly close to
-        what is now asked for comes back, and clearly less useful pending branches are parked. Dead ends are not shown: a parked branch's old reason is, so the judge can see
-        whether the new instructions overturn it.
+        what is now asked for comes back, and clearly less useful pending branches are parked.
+        Dead ends are not shown: a parked branch's old reason is, so the judge can see whether
+        the new instructions overturn it.
         """
         eligible = [n for n in nodes
                     if n.status in ("parked", "pending") and n.decided_by != "human"]

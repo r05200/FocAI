@@ -10,10 +10,25 @@ instruct() handles a later prompt (InstructionRequest): it records the instructi
 background amends the objectives and, if any objective was added, runs the amend-objectives agent
 over the tree (re-rating nodes and requesting forks where every branch is low).
 
-Every step is appended to the run's event log (RunStore) and the snapshot is saved. A run's live
-state (run, nodes) is shared by its tasks, so a mid-run instruction and the agent see the same
-objects. All LLM calls happen inside `llm.scope(run_id)`, so the stop route can cancel them; a
-stopped run is ended by the stop route (it saves the final event), so tasks just exit quietly.
+Every step is appended to the run's event log (RunStore). The tree is written to disk only at
+level boundaries: when a level is created and when it is completed (_boundary), so a page reload
+of a running run shows the start of the current level. A stop (or an error) saves the live tree as
+it is. Reloading an unfinished run from disk goes back to the start of its current level: its
+nodes recover the state they had when the level was created. A run's live state (run, nodes) is
+shared by its tasks, so a mid-run instruction and the agent see the same objects. All LLM calls
+happen inside `llm.scope(run_id)`, so the stop route can cancel them; a stopped run is ended by
+stop() (it saves the final event), so tasks just exit quietly.
+
+Instructions (instruct) are refused (RunNotRunning / ObjectivesNotReady) once the run has
+finished or before its objectives are written. While the run is paused they are queued: the amend
+step waits at the gate with everything else. While a step is running they abort it: the step is
+cancelled, the level is rewound to its start, the amendment runs, then the step starts again with
+the new instructions. Any error that is not a failed amendment ends the run (_fail).
+
+pause()/resume() close and open a per-run gate. While it is closed, the run's next step (writing
+objectives, the agent's turn, the amend agent's next layer, or any step an instruction starts)
+waits at a checkpoint. Calls already in flight are not cancelled; they finish first. Stop still
+works while paused: cancelling the run's tasks releases anything waiting on the gate.
 
 Not built yet: pushing events to connected clients (the SSE stream), more than one agent turn,
 and acting on fork requests.
@@ -22,6 +37,7 @@ and acting on fork requests.
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import time
 from contextlib import ExitStack
@@ -73,19 +89,60 @@ class Emitter:
         return event
 
 
+class RunNotRunning(ValueError):
+    """The run already finished, so it cannot be paused or resumed."""
+
+    def __init__(self, status: str) -> None:
+        super().__init__(f"run already {status}")
+        self.status = status
+
+
+class ObjectivesNotReady(ValueError):
+    """The run's objectives are not written yet, so it cannot take an instruction."""
+
+    def __init__(self) -> None:
+        super().__init__("the objectives are still being written")
+
+
+def _open_event() -> asyncio.Event:
+    event = asyncio.Event()
+    event.set()
+    return event
+
+
 @dataclass
 class LiveRun:
     """A run's state while something is working on it, shared by all of its tasks."""
 
     run: Run
     emitter: Emitter
+    gate: asyncio.Event = field(default_factory=asyncio.Event)  # set = open, clear = paused
     nodes: list[Node] = field(default_factory=list)
     dead_ends: list[DeadEnd] = field(default_factory=list)
     questions: list[Question] = field(default_factory=list)
     tasks: set[asyncio.Task] = field(default_factory=set)
+    level: int = 0  # depth of the level in progress
+    level_start: RunSnapshot | None = None  # the tree when that level was created
+    step: asyncio.Task | None = None  # the agent's step in flight, which an instruction aborts
+    aborting: bool = False  # the step was cancelled by an instruction (not by a stop)
+    amends_open: int = 0  # instructions whose amendment has not finished
+    amends_idle: asyncio.Event = field(default_factory=_open_event)  # set when amends_open is 0
+    amend_lock: asyncio.Lock = field(default_factory=asyncio.Lock)  # one amendment at a time
 
     def snapshot(self) -> RunSnapshot:
+        """The tree as it is right now."""
         return RunSnapshot(run=self.run, nodes=self.nodes, dead_ends=self.dead_ends,
+                           questions=self.questions)
+
+    def saved(self) -> RunSnapshot:
+        """What is saved between level boundaries: the live run, with the level in progress as
+        it was when it was created."""
+        if self.level_start is None:
+            return self.snapshot()
+        origin = {n.id: n for n in self.level_start.nodes}
+        nodes = [origin[n.id] if n.depth >= self.level else n
+                 for n in self.nodes if n.depth < self.level or n.id in origin]
+        return RunSnapshot(run=self.run, nodes=nodes, dead_ends=self.dead_ends,
                            questions=self.questions)
 
 
@@ -123,19 +180,68 @@ class RunManager:
         task.add_done_callback(done)
         return task
 
-    def _state(self, run_id: str) -> LiveRun:
-        """The run's live state, or one loaded from disk. KeyError if there is no such run."""
-        if run_id in self._live:
-            return self._live[run_id]
+    def _running(self, run_id: str) -> LiveRun:
+        """The live state of an unfinished run, loaded from disk if nothing is working on it
+        (back at the start of its current level). KeyError if there is no such run,
+        RunNotRunning if it has finished (nothing is loaded or kept for a finished run)."""
+        state = self._live.get(run_id)
+        if state is not None:
+            if state.run.status != "running":
+                raise RunNotRunning(state.run.status)
+            return state
         snap = self.store.snapshot(run_id)
         if snap is None:
             raise KeyError(run_id)
+        if snap.run.status != "running":
+            raise RunNotRunning(snap.run.status)
+        start = self.store.level_start(run_id)
+        nodes = [n.model_copy(deep=True) for n in (start or snap).nodes]
         state = LiveRun(run=snap.run, emitter=Emitter(self.store, run_id,
                                                       self.store.last_seq(run_id)),
-                        nodes=list(snap.nodes), dead_ends=list(snap.dead_ends),
-                        questions=list(snap.questions))
+                        nodes=nodes, dead_ends=list(snap.dead_ends),
+                        questions=list(snap.questions), level_start=start,
+                        level=max((n.depth for n in nodes), default=0))
+        if not snap.run.paused:
+            state.gate.set()
         self._live[run_id] = state
         return state
+
+    def _save(self, state: LiveRun) -> None:
+        self.store.save_snapshot(state.saved())
+
+    def _boundary(self, state: LiveRun) -> None:
+        """A level was created or completed: this tree is what a reload goes back to."""
+        snap = state.snapshot().model_copy(deep=True)
+        state.level_start = snap
+        state.level = max((n.depth for n in state.nodes), default=0)
+        self.store.save_snapshot(snap)
+        self.store.save_level_start(snap)
+
+    def _rewind_level(self, state: LiveRun) -> None:
+        """Put the nodes of the level in progress back to how they were when it was created."""
+        assert state.level_start is not None
+        origin = {n.id: n for n in state.level_start.nodes}
+        state.nodes[:] = [n for n in state.nodes if n.depth < state.level or n.id in origin]
+        for node in state.nodes:
+            if node.depth >= state.level:
+                for name in Node.model_fields:
+                    setattr(node, name, copy.deepcopy(getattr(origin[node.id], name)))
+        state.emitter.emit(Activity, message="A new instruction arrived: the current step was "
+                                             "aborted and will start again.")
+        for node in state.nodes:
+            if node.depth >= state.level and node.status == "running":
+                state.emitter.emit(NodeUpdated, node=node, change="running")
+
+    def _fail(self, state: LiveRun, error: str) -> None:
+        """End the run with an error: the tree is saved as it is and the other tasks stop."""
+        state.run.status = "failed"
+        state.run.paused = False
+        state.emitter.emit(RunFailed, error=error)
+        self.store.save_snapshot(state.snapshot())
+        for task in state.tasks:
+            if task is not asyncio.current_task():
+                task.cancel()
+        state.gate.set()
 
     def _scopes(self, run_id: str) -> ExitStack:
         """Tag every LLM call made for this run with its id, so the stop route reaches them."""
@@ -143,7 +249,7 @@ class RunManager:
         if self.amender is not None:
             llms.append(self.amender.scorer.llm)
         stack = ExitStack()
-        for llm in llms:
+        for llm in dict.fromkeys(llms):  # the scorers and objectives usually share one LLM
             stack.enter_context(llm.scope(run_id))
         return stack
 
@@ -151,6 +257,7 @@ class RunManager:
         """Create the run, record it, and start the agent in the background."""
         run = self._new_run(req)
         state = LiveRun(run=run.model_copy(deep=True), emitter=Emitter(self.store, run.id))
+        state.gate.set()
         self._live[run.id] = state
         state.emitter.emit(RunStarted, run=run)
         self.store.save_snapshot(RunSnapshot(run=run, nodes=[]))  # so it shows up as running
@@ -159,16 +266,52 @@ class RunManager:
 
     async def instruct(self, run_id: str, req: InstructionRequest) -> Instruction:
         """Record a mid-run prompt now; amend the objectives and re-check the tree in the
-        background. KeyError if the run is unknown."""
-        state = self._state(run_id)
+        background. While a step is running (and the run is not paused) the step is aborted
+        first. KeyError if the run is unknown, RunNotRunning if it finished, ObjectivesNotReady
+        if its objectives are not written yet."""
+        state = self._running(run_id)
+        if not state.run.objectives:
+            raise ObjectivesNotReady
         instruction = Instruction(kind="steer", text=req.text.strip())
         state.run.instructions.append(instruction)
         if req.directives is not None:
             state.run.directives = list(req.directives)
         state.emitter.emit(InstructionAdded, instruction=instruction)
-        self.store.save_snapshot(state.snapshot())
+        self._save(state)
+        state.amends_open += 1
+        state.amends_idle.clear()
+        if not state.run.paused and state.step is not None and not state.step.done():
+            state.aborting = True
+            state.step.cancel()
         self._spawn(state, self._amend(state, instruction))
         return instruction
+
+    async def pause(self, run_id: str) -> Run:
+        """Hold the run: its next step waits until resume(). Nothing in flight is cancelled.
+        KeyError if unknown, RunNotRunning if it already finished. Pausing twice is fine."""
+        state = self._running(run_id)
+        if not state.run.paused:
+            state.gate.clear()
+            state.run.paused = True
+            state.emitter.emit(Activity, message="Paused: the agent takes no further step "
+                                                 "until it is resumed.")
+            self._save(state)
+        return state.run
+
+    async def resume(self, run_id: str) -> Run:
+        """Open the gate so the run carries on from where it was. Same errors as pause()."""
+        state = self._running(run_id)
+        if state.run.paused:
+            state.run.paused = False
+            state.gate.set()
+            state.emitter.emit(Activity, message="Resumed.")
+            self._save(state)
+        return state.run
+
+    @staticmethod
+    async def _checkpoint(state: LiveRun) -> None:
+        """Wait here while the run is paused."""
+        await state.gate.wait()
 
     def is_running(self, run_id: str) -> bool:
         return run_id in self._live and bool(self._live[run_id].tasks)
@@ -181,8 +324,16 @@ class RunManager:
         tasks = list(state.tasks)
         for t in tasks:
             t.cancel()
+        state.gate.set()  # nothing may stay blocked on a paused run that is being stopped
         await asyncio.gather(*tasks, return_exceptions=True)
         return True
+
+    async def stop(self, run_id: str) -> RunFailed:
+        """End a run the user stopped: cancel its tasks, then save the tree as it is with the
+        final run_failed event. KeyError if the run is unknown."""
+        state = self._live.get(run_id)
+        await self.cancel(run_id)
+        return self.store.mark_stopped(run_id, state.snapshot() if state else None)
 
     async def wait(self, run_id: str) -> None:
         """Wait until every task of the run is finished (used by tests and shutdown)."""
@@ -192,37 +343,70 @@ class RunManager:
     async def _amend(self, state: LiveRun, instruction: Instruction) -> None:
         run, emitter = state.run, state.emitter
         try:
-            with self._scopes(run.id):
-                new = await self.objectives.amend(run.objectives, instruction,
-                                                  question=run.question, directives=run.directives)
-                if not new:
-                    emitter.emit(Activity, message="The instruction added no new objectives.")
-                    return
-                run.objectives = [*run.objectives, *new]
-                emitter.emit(ObjectivesUpdated, objectives=run.objectives)
-                if self.amender is None or not state.nodes:
-                    return
-                result = await self.amender.run(run, state.nodes)
-            by_id = {n.id: n for n in state.nodes}
-            for s in result.rated:
-                emitter.emit(NodeUpdated, node=by_id[s.node_id], change="scored")
-            for fork in result.forks:
-                emitter.emit(Activity, node_id=fork.node_id,
-                             message=f"Backtracking: fork requested here. {fork.reason}")
+            async with state.amend_lock:
+                with self._scopes(run.id):
+                    await self._checkpoint(state)
+                    new = await self.objectives.amend(
+                        run.objectives, instruction, question=run.question,
+                        directives=run.directives)
+                    if not new:
+                        emitter.emit(Activity, message="The instruction added no new objectives.")
+                    else:
+                        run.objectives = [*run.objectives, *new]
+                        emitter.emit(ObjectivesUpdated, objectives=run.objectives)
+                        if self.amender is not None and state.nodes:
+                            result = await self.amender.run(
+                                run, state.nodes, lambda: self._checkpoint(state))
+                            by_id = {n.id: n for n in state.nodes}
+                            for s in result.rated:
+                                emitter.emit(NodeUpdated, node=by_id[s.node_id], change="scored")
+                            for fork in result.forks:
+                                emitter.emit(
+                                    Activity, node_id=fork.node_id,
+                                    message=f"Backtracking: fork requested here. {fork.reason}")
         except (LLMCancelled, asyncio.CancelledError):
             log.info("amendment for run %s was stopped", run.id)
-            return
-        except (LLMError, ValueError, OSError) as e:
+        except (LLMError, ValueError, OSError) as e:  # a failed amendment does not end the run
             log.exception("amendment for run %s failed", run.id)
             emitter.emit(Activity, message=f"Could not apply the instruction: {e}")
+        except Exception as e:
+            log.exception("amendment for run %s failed unexpectedly", run.id)
+            self._fail(state, str(e))
         finally:
-            self.store.save_snapshot(state.snapshot())
+            if run.status == "running":
+                self._save(state)
+            state.amends_open -= 1
+            if state.amends_open == 0:
+                state.amends_idle.set()
+
+    async def _step(self, state: LiveRun):
+        """The agent's step. An instruction that arrives meanwhile aborts it: the level is
+        rewound, the amendment finishes, and the step starts again with the new instructions."""
+        run = state.run
+        while True:
+            await self._checkpoint(state)
+            await state.amends_idle.wait()
+            step = asyncio.create_task(self.agent.run(
+                question=run.question, objectives=run.objectives,
+                instructions=run.instructions, directives=run.directives))
+            state.step = step
+            try:
+                return await step
+            except asyncio.CancelledError:
+                task = asyncio.current_task()
+                if not state.aborting or (task is not None and task.cancelling()):
+                    raise  # a stop, not an instruction
+                state.aborting = False
+                self._rewind_level(state)
+            finally:
+                state.step = None
 
     async def _run(self, state: LiveRun) -> None:
         run, emitter, nodes = state.run, state.emitter, state.nodes
         started = time.time()
         try:
             with self._scopes(run.id):
+                await self._checkpoint(state)
                 spec = next((i.text for i in run.instructions if i.kind == "spec"), "")
                 run.objectives = await self.objectives.create(
                     question=run.question, spec=spec, directives=run.directives)
@@ -235,27 +419,31 @@ class RunManager:
                 emitter.emit(Activity, message="The agent is working on the question.",
                              node_id=root.id)
                 emitter.emit(NodeUpdated, node=root, change="running")
+                self._boundary(state)  # level 0 created
 
-                result = await self.agent.run(
-                    question=run.question, objectives=run.objectives,
-                    instructions=run.instructions, directives=run.directives)
+                result = await self._step(state)
+
+                await self._checkpoint(state)
+                await state.amends_idle.wait()  # let a queued amendment finish first
 
             root.status = "done"
             root.decided_by = "agent"
             root.result = result.reply.answer
             root.tokens = TokenUsage(agent=result.tokens.total)
             emitter.emit(NodeUpdated, node=root, change="done")
+            self._boundary(state)  # level 0 completed
             run.final_answer = result.reply.answer
             run.status = "done"
+            run.paused = False
             run.totals.tokens = root.tokens
             run.totals.nodes_total = len(nodes)
             run.totals.elapsed_s = round(time.time() - started, 2)
             emitter.emit(RunCompleted, run=run)
         except (LLMCancelled, asyncio.CancelledError):
-            log.info("run %s was stopped", run.id)  # the stop route saves the final event
+            log.info("run %s was stopped", run.id)  # stop() saves the tree and the final event
             return
-        except (LLMError, ValueError, OSError) as e:
+        except Exception as e:
             log.exception("run %s failed", run.id)
-            run.status = "failed"
-            emitter.emit(RunFailed, error=str(e))
+            self._fail(state, str(e))
+            return
         self.store.save_snapshot(state.snapshot())

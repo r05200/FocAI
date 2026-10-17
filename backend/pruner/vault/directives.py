@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 from pruner.core.config import Config, get_config
+from pruner.core.fs import write_atomic
 from pruner.core.models import Directive, DirectiveRequest
 
 DIRECTIVES_FILE = "_directives.json"
@@ -26,11 +27,8 @@ class DirectiveStore:
                 self._directives[d.id] = d
 
     def _save(self) -> None:
-        self.dir.mkdir(parents=True, exist_ok=True)
-        tmp = self._path.with_suffix(".tmp")
-        tmp.write_text(json.dumps([d.model_dump(mode="json") for d in self._directives.values()],
-                                  indent=1))
-        tmp.replace(self._path)
+        write_atomic(self._path, json.dumps(
+            [d.model_dump(mode="json") for d in self._directives.values()], indent=1))
 
     def add(self, req: DirectiveRequest) -> Directive:
         directive = Directive(person=req.person, text=req.text.strip())

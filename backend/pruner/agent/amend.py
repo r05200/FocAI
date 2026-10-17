@@ -26,12 +26,12 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 
 from pruner.agent.tools import Tool
 from pruner.core.config import Config, get_config
-from pruner.core.models import Directive, ForkRequest, Node, Run
+from pruner.core.models import ForkRequest, Node, Run
 from pruner.pruning.prescorer import PreScored, PreScorer
 from pruner.pruning.scale import to_ten
 from pruner.runs.store import RunStore
@@ -52,14 +52,13 @@ class AmendObjectivesAgent:
 
     # ---- the two tools
 
-    async def rate_layer(self, run: Run, siblings: Sequence[Node],
-                         directives: Sequence[Directive | str] = ()) -> list[PreScored]:
+    async def rate_layer(self, run: Run, siblings: Sequence[Node]) -> list[PreScored]:
         """Re-rate sibling nodes against the run's current objectives and write the new
         pre-scores (and the scorer tokens) onto them."""
         scored = await self.scorer.rate_for_amendment(
             siblings, question=run.question, objectives=run.objectives,
             people=run.vault_people, instructions=run.instructions,
-            directives=directives or run.directives)
+            directives=run.directives)
         for node, s in zip(siblings, scored, strict=True):
             node.pre_score = s.pre_score
             node.tokens.scorer += s.tokens.total
@@ -96,7 +95,10 @@ class AmendObjectivesAgent:
 
     # ---- the walk
 
-    async def run(self, run: Run, nodes: Sequence[Node]) -> AmendResult:
+    async def run(self, run: Run, nodes: Sequence[Node],
+                  checkpoint: Callable[[], Awaitable[None]] | None = None) -> AmendResult:
+        """Walk the tree. `checkpoint`, if given, is awaited before each layer is rated, so a
+        paused run holds between layers (the calls of a layer already started still finish)."""
         children: dict[str, list[Node]] = defaultdict(list)
         for n in nodes:
             if n.parent_id is not None:
@@ -104,6 +106,8 @@ class AmendObjectivesAgent:
         result = AmendResult()
         frontier = [n for n in nodes if n.parent_id is None]
         for _ in range(self.cfg.max_depth + 1):  # a tree never goes deeper than the cap
+            if checkpoint is not None:
+                await checkpoint()
             groups = [(p, kids) for p in frontier
                       if (kids := [c for c in children[p.id] if c.status not in DEAD])]
             if not groups:

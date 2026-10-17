@@ -88,7 +88,7 @@ async def regenerate_layout(body: RegenerateLayoutRequest, store: Store) -> Vaul
 
 @router.post("/items", status_code=201)
 async def ingest_item(body: IngestRequest, store: Store) -> IngestResult:
-    """Ingest text: the vault LLM writes a title, summary blurb and tags; the item is embedded,
+    """Ingest text: the vault LLM writes a title and summary blurb (tags are the ones you send); the item is embedded,
     linked to its nearest neighbors, and each link is labelled contradicts / supports / agrees /
     investigate (a question worth looking into) with a one-line reason. Neighbors judged
     unrelated get no link."""

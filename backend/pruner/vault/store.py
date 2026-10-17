@@ -1,7 +1,8 @@
 """The knowledge vault: ingestion, storage, similarity links and relation labels.
 
 Ingest pipeline for one item:
-  1. The vault LLM writes a title, a short summary blurb and tags (reusing existing tags).
+  1. The vault LLM writes a title and a short summary blurb (it no longer writes tags: those
+     come from the person, via IngestRequest.tags).
   2. The item is embedded.
   3. Its nearest existing items (any person) with cosine similarity >= cfg.link_threshold,
      at most cfg.neighbors_per_item of them, become candidate links.
@@ -33,6 +34,7 @@ from pydantic import BaseModel, Field
 
 from pruner.core import prompts
 from pruner.core.config import Config, get_config
+from pruner.core.fs import write_atomic
 from pruner.core.llm import LLM
 from pruner.core.models import (
     IngestRequest,
@@ -57,14 +59,9 @@ MAX_TAGS = 5
 # --------------------------------------------------------------------------- LLM output shapes
 
 
-class VaultExistsError(ValueError):
-    """The person already has a vault."""
-
-
 class IngestDraft(BaseModel):
     title: str
     summary: str
-    tags: list[str]
     investigate: bool = False
 
 
@@ -79,6 +76,10 @@ class RelationOutput(BaseModel):
 
 
 # --------------------------------------------------------------------------- helpers
+
+
+class VaultExistsError(ValueError):
+    """The person already has a vault."""
 
 
 def normalize_tag(tag: str) -> str:
@@ -135,16 +136,11 @@ class VaultStore:
         for person in self._lay_out_missing():  # e.g. seeded items that were never placed
             self._save(person)
 
-    def _write(self, path: Path, data: object) -> None:
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=1))
-        tmp.replace(path)
-
     def _save(self, person: str) -> None:
-        self.dir.mkdir(parents=True, exist_ok=True)
         items = [i.model_dump(mode="json") for i in self._items.values() if i.person == person]
-        self._write(self.dir / f"{person}.json", items)
-        self._write(self.dir / EDGES_FILE, [e.model_dump(mode="json") for e in self._edges])
+        write_atomic(self.dir / f"{person}.json", json.dumps(items, indent=1))
+        write_atomic(self.dir / EDGES_FILE,
+                     json.dumps([e.model_dump(mode="json") for e in self._edges], indent=1))
 
     # ---- layout (positions are cached on the items)
 
@@ -230,8 +226,7 @@ class VaultStore:
         if person in self.people():
             raise VaultExistsError(person)
         self._vaults.add(person)
-        self.dir.mkdir(parents=True, exist_ok=True)
-        self._write(self.dir / f"{person}.json", [])
+        write_atomic(self.dir / f"{person}.json", "[]")
         return self.summary(person)
 
     def tags(self) -> list[str]:
@@ -247,21 +242,33 @@ class VaultStore:
         return VaultGraph(nodes=[i.view() for i in items], edges=edges)
 
     def nearest(self, embedding: list[float], *, k: int, threshold: float,
-                exclude: frozenset[str] = frozenset(), person: str | None = None,
-                people: Collection[str] | None = None,
-                ) -> list[tuple[VaultItem, float]]:
-        """Top-k items by cosine similarity, at or above threshold, best first. `person` or
-        `people` limits the search to those owners (an empty `people` searches nothing)."""
+                people: Collection[str] | None = None) -> list[tuple[VaultItem, float]]:
+        """Top-k items by cosine similarity, at or above threshold, best first. `people` limits
+        the search to those owners (an empty `people` searches nothing)."""
         pool = [i for i in self._items.values()
-                if i.embedding is not None and i.id not in exclude
-                and (person is None or i.person == person)
-                and (people is None or i.person in people)]
+                if i.embedding is not None and (people is None or i.person in people)]
         if not pool:
             return []
         matrix = unit_vectors(np.array([i.embedding for i in pool], dtype=np.float32))
         sims = matrix @ unit_vectors(np.array(embedding, dtype=np.float32))
         order = np.argsort(-sims)[:k]
         return [(pool[j], float(sims[j])) for j in order if sims[j] >= threshold]
+
+    def edges_of(self, item_ids: Collection[str],
+                 people: Collection[str] | None = None) -> list[VaultEdge]:
+        """The direct edges (either direction) of the given items. With `people`, only edges
+        whose two items both belong to those people."""
+        ids = set(item_ids)
+        out = []
+        for e in self._edges:
+            if e.source not in ids and e.target not in ids:
+                continue
+            a, b = self._items.get(e.source), self._items.get(e.target)
+            if a is None or b is None:
+                continue
+            if people is None or (a.person in people and b.person in people):
+                out.append(e)
+        return out
 
     # ---- ingest
 
@@ -270,12 +277,11 @@ class VaultStore:
             text = req.text.strip()[:MAX_INGEST_CHARS]
             draft = (await self.llm.generate(
                 IngestDraft,
-                prompts.render("vault_ingest", kind=req.kind, text=text,
-                               existing_tags=", ".join(self.tags()) or "(none yet)"),
+                prompts.render("vault_ingest", kind=req.kind, text=text),
                 model=self.cfg.vault_model, purpose="vault_ingest",
             )).value
 
-            tags = list(dict.fromkeys(t for t in map(normalize_tag, draft.tags) if t))[:MAX_TAGS]
+            tags = list(dict.fromkeys(t for t in map(normalize_tag, req.tags) if t))[:MAX_TAGS]
             item = VaultItem(
                 person=req.person, kind=req.kind, title=one_line(req.title or draft.title),
                 summary=one_line(draft.summary), tags=tags, source_text=req.text.strip(),

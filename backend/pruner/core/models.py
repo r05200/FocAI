@@ -210,6 +210,9 @@ class Run(BaseModel):
     vault_people: list[str] = Field(default_factory=list)  # whose vaults the scorers search
     mode: RunMode = "pruned"
     status: RunStatus = "running"
+    # True while the run is paused: its agent takes no further step until it is resumed. Not a
+    # status (the run is still "running"); cleared when the run ends or is stopped.
+    paused: bool = False
     caps: Caps
     final_answer: str | None = None
     totals: RunTotals = Field(default_factory=RunTotals)
@@ -235,6 +238,11 @@ class Directive(BaseModel):
     person: str
     text: str
     created_at: float = Field(default_factory=time.time)
+
+
+class PauseResult(BaseModel):
+    run_id: str
+    paused: bool
 
 
 class ForkRequest(BaseModel):
@@ -303,6 +311,9 @@ class IngestRequest(BaseModel):
     kind: VaultKind = "note"
     text: str = Field(min_length=1)
     title: str | None = None  # optional override; otherwise the ingest LLM writes one
+    # Topic tags, chosen by the person (the ingest LLM no longer writes them). Normalized to
+    # lowercase-hyphenated, deduplicated and capped at 5 when stored.
+    tags: list[str] = Field(default_factory=list)
 
     @field_validator("kind")
     @classmethod
@@ -370,6 +381,8 @@ class PublicConfig(BaseModel):
     backtrack_below: float
     similarity_threshold: float
     search_top_k: int
+    agent_search_threshold: float
+    agent_search_top: int
     neighbors_per_item: int
     link_threshold: float
 

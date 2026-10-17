@@ -10,6 +10,7 @@ dependencies = [
     "numpy>=1.26",
     "google-genai>=1.0",
     "python-dotenv>=1.0",
+    "httpx>=0.27",  # the agent's fetch tool (also used by google-genai)
 ]
 
 [dependency-groups]

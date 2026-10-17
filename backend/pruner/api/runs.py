@@ -11,12 +11,13 @@ from pruner.core.models import (
     ForkRequest,
     Instruction,
     InstructionRequest,
+    PauseResult,
     Run,
     RunSnapshot,
     StartRunRequest,
     StopResult,
 )
-from pruner.runs.manager import RunManager
+from pruner.runs.manager import ObjectivesNotReady, RunManager, RunNotRunning
 from pruner.runs.store import RunStore
 
 router = APIRouter(prefix="/runs", tags=["runs"])
@@ -55,11 +56,41 @@ async def add_instruction(run_id: str, body: InstructionRequest, manager: Manage
     background, it is turned into new objectives (objectives_updated) and, if any were added, the
     amend-objectives agent re-rates the tree from the root (node_updated "scored") and requests a
     fork wherever every branch under a node scored low (an activity line; GET /runs/{id}/forks).
-    `directives`, when given, replaces the run's directive list."""
+    `directives`, when given, replaces the run's directive list.
+
+    409 while the objectives are still being written, and once the run has finished (done, failed
+    or stopped). A paused run queues the instruction; a running step is aborted and started again
+    after the amendment."""
     try:
         return await manager.instruct(run_id, body)
     except KeyError as e:
         raise HTTPException(status_code=404, detail="run not found") from e
+    except (RunNotRunning, ObjectivesNotReady) as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
+
+@router.post("/{run_id}/pause", status_code=202)
+async def pause_run(run_id: str, manager: Manager) -> PauseResult:
+    """Hold the run: calls already in flight finish, but its next step (and any step an
+    instruction starts) waits until /resume. `paused` becomes true on the run. 404 if the run is
+    unknown, 409 if it already finished. Pausing a paused run is fine."""
+    return await _hold(manager.pause, run_id)
+
+
+@router.post("/{run_id}/resume", status_code=202)
+async def resume_run(run_id: str, manager: Manager) -> PauseResult:
+    """Open the gate; the run carries on from where it was. Same errors as /pause."""
+    return await _hold(manager.resume, run_id)
+
+
+async def _hold(call, run_id: str) -> PauseResult:
+    try:
+        run = await call(run_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail="run not found") from e
+    except RunNotRunning as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    return PauseResult(run_id=run_id, paused=run.paused)
 
 
 @router.get("/{run_id}/forks")
@@ -78,10 +109,11 @@ async def stop_run(
     agent_llm: Annotated[LLM, Depends(get_agent_llm)],
     supporting_llm: Annotated[LLM, Depends(get_supporting_llm)],
 ) -> StopResult:
-    """Stop the run now. Its LLM calls in flight (agent and supporting) are cancelled (the Gemini request is abandoned
-    and the caller gets LLMCancelled) and its later calls are refused, so the agent loop cannot
-    start another step. Then a final run_failed event ("Stopped by the user") is saved and the
-    run's status becomes "failed". 404 if the run is unknown, 409 if it already finished.
+    """Stop the run now. Its LLM calls in flight (agent and supporting) are cancelled (the Gemini
+    request is abandoned and the caller gets LLMCancelled) and its later calls are refused, so
+    the agent loop cannot start another step. Then a final run_failed event ("Stopped by the
+    user") is saved and the run's status becomes "failed". 404 if the run is unknown, 409 if it
+    already finished.
 
     Only calls made inside `llm.scope(run_id)` are affected; other runs and vault ingestion keep
     working."""
@@ -92,8 +124,7 @@ async def stop_run(
         raise HTTPException(status_code=409, detail=f"run already {snapshot.run.status}")
     # The agent and the supporting LLM are separate instances; the run may be using both.
     cancelled = agent_llm.stop(run_id) + supporting_llm.stop(run_id)
-    await manager.cancel(run_id)  # end the run's task before the final event is numbered
-    store.mark_stopped(run_id)
+    await manager.stop(run_id)  # ends the run's tasks, then saves the tree as it is
     return StopResult(run_id=run_id, cancelled_calls=cancelled)
 
 

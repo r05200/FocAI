@@ -1,6 +1,7 @@
 """Where each vault item sits on the 3D mind map.
 
-Positions are cached on the items (VaultItem.position), saved with them, and only recomputed here:
+Positions are cached on the items (VaultItem.auto_position), saved with them, and only
+recomputed here (a person's manual moves live in VaultItem.position and are never touched here):
 - pca_positions(): a full layout. Embeddings are projected onto their top three principal
   components, so similar items end up close together. Deterministic for the same items.
 - place_near(): a spot beside the most similar already-placed item, for a newly added item, so
