@@ -62,10 +62,14 @@ class PostScorer:
     async def score(self, node: Node, *, question: str, objectives: list[Objective],
                     people: Sequence[str], baseline: str = "", dead_ends: Sequence[DeadEnd] = (),
                     instructions: Sequence[Instruction] = (),
-                    directives: Sequence[Directive | str] = ()) -> PostScored:
-        if node.result is None:
+                    directives: Sequence[Directive | str] = (),
+                    result: str | None = None) -> PostScored:
+        """`result` is the full text of what the experiment produced (node.result is only its
+        short summary); it defaults to node.result."""
+        result = result or node.result
+        if result is None:
             raise ValueError(f"node {node.id} has no result to score")
-        [query] = await self.llm.embed([f"{node.description}\n{node.result}"],
+        [query] = await self.llm.embed([f"{node.full_text()}\n{result}"],
                                        task="RETRIEVAL_QUERY", purpose="scorer_embed")
         hits = self.vault.nearest(query, k=self.cfg.search_top_k,
                                   threshold=self.cfg.similarity_threshold, people=people)
@@ -79,8 +83,8 @@ class PostScorer:
             objectives=prompts.render_objectives(objectives),
             baseline=baseline or "(no baseline recorded)",
             node_type=node.type,
-            description=node.description,
-            result=node.result,
+            description=node.full_text(),
+            result=result,
             people=", ".join(people) or "nobody",
             vault_items="\n".join(f"{i.id} ({i.kind}, {i.person}): {i.title}. {i.summary}"
                                   for i, _ in hits) or "(nothing close)",

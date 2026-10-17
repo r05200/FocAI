@@ -80,8 +80,15 @@ RESEARCH_BRIEFS = {
 }
 
 
+def short_title(text: str, limit: int = 90) -> str:
+    """The first sentence of `text`, cut to `limit` characters (when the model gave no title)."""
+    first = " ".join(text.split()).split(". ")[0].rstrip(".")
+    return first if len(first) <= limit else first[: limit - 1].rstrip() + "…"
+
+
 class ProposedHypothesis(BaseModel):
     family: str
+    title: str = ""  # at most 12 words: the node's label in the UI
     statement: str
     rationale: str = ""
     planned_experiment: str = ""
@@ -267,16 +274,14 @@ class HypothesisPhase:
     async def _create_and_score(self, host: RunManager, state: LiveRun, parent: Node,
                                 base: str | None, kept: list) -> list[Node]:
         run = state.run
-        earlier = [n.description for n in state.nodes]
+        earlier = [n.full_text() for n in state.nodes]
         ids = next_node_ids(state.nodes, len(kept))
         nodes = []
         for node_id, (p, edit, checked, family) in zip(ids, kept, strict=True):
             node = Node(
                 id=node_id, run_id=run.id, parent_id=parent.id, depth=parent.depth + 1,
-                type="hypothesis", description=(f"{p.statement} Experiment: "
-                                                f"{p.planned_experiment}".strip()
-                                                + (f" Searches: {'; '.join(p.queries)}"
-                                                   if checked is None else "")),
+                type="hypothesis",
+                description=" ".join(p.title.split())[:120] or short_title(p.statement),
                 status="pending", phase="hypothesis", family=family,
                 summary=p.statement,
                 hypothesis=HypothesisSpec(statement=p.statement, rationale=p.rationale,
@@ -317,7 +322,7 @@ class HypothesisPhase:
                 text=node.decision.reason if node.decision else "", phase="hypothesis"))
             if node.status == "parked":
                 state.dead_ends.append(DeadEnd(run_id=run.id, node_id=node.id,
-                                               description=node.description,
+                                               description=node.full_text(),
                                                reason=node.decision.reason
                                                if node.decision else "parked"))
             host._emit(state, NodeUpdated, node=node,

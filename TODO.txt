@@ -155,3 +155,16 @@ it needs, and what milestone or session it came from.
 
 [ ] Vault notes are framed as the user's own unverified notes in every prompt and in the
     search_vault tool (not a source of truth); a measurement or a checked source overrules them.
+
+--- Node titles, short results, and the conclusion (frontend-visible) ----------------------------
+
+[ ] Node.description is now a SHORT TITLE written by the model (at most 12 words); the whole
+    proposal is in node.hypothesis (statement, rationale, planned_experiment, expected_signal,
+    queries) and in the node's log. Node.result is a short summary (at most 400 chars); the full
+    experiment text is in the "Experiment measured / failed" log entry. Research page excerpts are
+    dropped from node.experiment.result once judged. decision.reason (why a node was kept or
+    parked) is unchanged; note a post-score decision replaces the pre-score one on the node (the
+    pre-score reason stays in the log).
+[ ] The conclusion node: description is "Conclusion: <headline>", combines = every judged node,
+    result = the full report. The run no longer stops early when all objectives are covered: the
+    waiting branches run first (budget permitting), then the report combines every branch.

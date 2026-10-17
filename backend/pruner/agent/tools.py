@@ -199,10 +199,10 @@ def get_results_tool(ctx: ToolContext) -> Tool:
         for n in ctx.nodes:
             if n.result is None or (status and n.status != status):
                 continue
-            if contains and contains.casefold() not in f"{n.description} {n.result}".casefold():
+            if contains and contains.casefold() not in f"{n.full_text()} {n.result}".casefold():
                 continue
             found.append({
-                "id": n.id, "parent_id": n.parent_id, "description": n.description,
+                "id": n.id, "parent_id": n.parent_id, "description": n.full_text()[:400],
                 "status": n.status, "result": one_line(n.result)[:800],
                 "post_score": None if n.post_score is None else to_ten(n.post_score),
                 "objectives_advanced": n.criteria_progress,

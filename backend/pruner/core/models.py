@@ -271,7 +271,7 @@ class Node(BaseModel):
     parent_id: str | None = None  # None only for the root
     depth: int = 0
     type: NodeType
-    description: str
+    description: str  # a SHORT title (the UI's node label); the full text is full_text()
     status: NodeStatus = "pending"
     pre_score: PreScore | None = None
     post_score: float | None = Field(default=None, ge=0, le=1)
@@ -308,6 +308,17 @@ class Node(BaseModel):
     pending_action: HumanAction | None = None
     tool_calls: dict[str, int] = Field(default_factory=dict)  # calls used, per phase
     created_at: float = Field(default_factory=time.time)
+
+    def full_text(self) -> str:
+        """The whole proposal as one text, for scorers, duplicate checks and dead ends.
+        `description` is only its short title (what the UI shows)."""
+        h = self.hypothesis
+        if h is None:
+            return self.description
+        text = f"{h.statement} Experiment: {h.planned_experiment}".strip()
+        if h.queries:
+            text += f" Searches: {'; '.join(h.queries)}"
+        return text
 
 
 class Caps(BaseModel):

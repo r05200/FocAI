@@ -135,7 +135,7 @@ class PreScorer:
                               earlier: Sequence[str]) -> dict[str, str]:
         """node id -> the earlier text it nearly repeats. `earlier` holds the descriptions of
         earlier experiments and failed-log entries; earlier siblings are checked too."""
-        texts = [n.description for n in nodes]
+        texts = [n.full_text() for n in nodes]
         vectors = np.array(await self.llm.embed([*texts, *earlier], task="SEMANTIC_SIMILARITY",
                                                 purpose="scorer_embed"), dtype=np.float32)
         sims = unit_vectors(vectors[: len(nodes)]) @ unit_vectors(vectors).T
@@ -165,7 +165,7 @@ class PreScorer:
 
         blocks = []
         for node, node_hits in zip(nodes, hits, strict=True):
-            lines = [f"Candidate {node.id} ({node.type}): {node.description}"]
+            lines = [f"Candidate {node.id} ({node.type}): {node.full_text()}"]
             if node.id in duplicates:
                 lines.append(f"Possible repeat of earlier work: {duplicates[node.id]}")
             blocks.append("\n".join([*lines, *self._vault_lines(people, node_hits)]))
@@ -175,7 +175,7 @@ class PreScorer:
             question=question,
             instructions=prompts.render_instructions(instructions, directives),
             objectives=prompts.render_objectives(objectives),
-            parent=parent.description if parent else "(this is the first step)",
+            parent=parent.full_text() if parent else "(this is the first step)",
             dead_ends=prompts.render_dead_ends(dead_ends),
             candidates="\n\n".join(blocks),
         )
@@ -208,7 +208,7 @@ class PreScorer:
         blocks = []
         for node, node_hits in zip(eligible, hits, strict=True):
             head = f"Candidate {node.id} ({node.type}, currently {node.status})"
-            lines = [f"{head}: {node.description}"]
+            lines = [f"{head}: {node.full_text()}"]
             if node.decision:
                 lines.append(f"Earlier decision ({node.decision.verdict}): {node.decision.reason}")
             blocks.append("\n".join([*lines, *self._vault_lines(people, node_hits)]))
@@ -244,7 +244,7 @@ class PreScorer:
         hits = await self._search(nodes, people)
         blocks = []
         for node, node_hits in zip(nodes, hits, strict=True):
-            lines = [f"Candidate {node.id} ({node.type}, {node.status}): {node.description}"]
+            lines = [f"Candidate {node.id} ({node.type}, {node.status}): {node.full_text()}"]
             if node.result:
                 lines.append(f"What it found: {one_line(node.result)[:300]}")
             blocks.append("\n".join([*lines, *self._vault_lines(people, node_hits)]))
@@ -295,7 +295,7 @@ class PreScorer:
     # ---- shared pieces
 
     async def _search(self, nodes: Sequence[Node], people: Sequence[str]) -> list[list]:
-        queries = await self.llm.embed([n.description for n in nodes], task="RETRIEVAL_QUERY",
+        queries = await self.llm.embed([n.full_text() for n in nodes], task="RETRIEVAL_QUERY",
                                        purpose="scorer_embed")
         hits = [self.vault.nearest(q, k=self.cfg.search_top_k,
                                    threshold=self.cfg.similarity_threshold, people=people)

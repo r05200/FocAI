@@ -6,7 +6,7 @@ Propose {{count}} hypotheses about what the user wants to see, each from a DIFFE
 
 Mode: {{mode}}. {{mode_brief}}
 
-For each hypothesis give: "family", "statement" (what you expect the user wants to see and why, one sentence), "rationale", "planned_experiment" (what the searches should turn up), "expected_signal" (what a relevant resource would contain), "queries" (short search queries, written the way a person would type them), and "vault_items_used" (ids of notes you relied on). Leave "edits" and "new_files" empty. Rules: {{limits}}
+For each hypothesis give: "family", "title" (at most 12 words, naming the guess: it is the label people see), "statement" (what you expect the user wants to see and why, one sentence), "rationale", "planned_experiment" (what the searches should turn up), "expected_signal" (what a relevant resource would contain), "queries" (short search queries, written the way a person would type them), and "vault_items_used" (ids of notes you relied on). Leave "edits" and "new_files" empty. Rules: {{limits}}
 
 Do not claim results; the orchestrator runs the searches and judges what they find.
 

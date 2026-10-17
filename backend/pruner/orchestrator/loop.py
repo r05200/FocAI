@@ -15,13 +15,15 @@ whose relevance synthesis then judges (orchestrator/research.py). The run:
        judge it and log the finding (orchestrator/synthesis.py),
        turn the agent's next action into an expansion within the budget
        (orchestrator/actions.py);
-     until the experiment budget is used, nothing is left to try, or every objective is covered
-     and the best node's own advice was to stop;
+     until the experiment budget is used or nothing is left to try (covering every objective
+     does not end it early: the conclusion waits for all the other branches);
   5. finishes: the best supported version is left applied to the user's files (the original
      files if nothing was supported), the patch from the originals is saved
      (GET /runs/{id}/patch), and a final report is written. The answer becomes a conclusion
      node, a child of the node the run ended on: the best node if it said stop and the
-     objectives are covered, else the node judged last (the root if none was).
+     objectives are covered, else the node judged last (the root if none was). Its report
+     combines the results of every branch (final_report.md gets one block per branch), and its
+     `combines` lists the nodes it draws on.
 
 Steering (steer): after an instruction or a chip toggle, the manager's amendment task calls
 steer(), which re-rates the tree in one batched call and offers suggestions
@@ -58,7 +60,7 @@ from pruner.core.llm import LLM, LLMError
 from pruner.core.models import DeadEnd, ForkRequest, LogEntry, Node
 from pruner.orchestrator import steering
 from pruner.orchestrator.actions import experiments_run, plan_action, room_under, why_blocked
-from pruner.orchestrator.experiment import ExperimentPhase, Runner, describe
+from pruner.orchestrator.experiment import ExperimentPhase, Runner, brief, describe
 from pruner.orchestrator.proposer import HypothesisPhase, next_node_ids
 from pruner.orchestrator.queue import select_next
 from pruner.orchestrator.research import ResearchPhase, queries_of
@@ -74,11 +76,37 @@ if TYPE_CHECKING:
 
 
 class FinalReport(BaseModel):
+    title: str = ""  # a headline: the conclusion node's label
     answer: str
 
 
 class BaselineFailed(RuntimeError):
     pass
+
+
+def branches_text(nodes: list[Node]) -> str:
+    """One block per branch node (not the root or the conclusion) for the final report: where it
+    stands, its result and why it was kept or parked, so the report can combine them."""
+    by_id = {n.id: n for n in nodes}
+    lines = []
+    for n in nodes:
+        if n.parent_id is None or n.type == "conclusion":
+            continue
+        path, cur = [], n
+        while cur is not None:
+            path.append(cur.id)
+            cur = by_id.get(cur.parent_id) if cur.parent_id else None
+        state = n.verdict or ("not run" if n.experiment is None else n.status)
+        line = f"- {' > '.join(reversed(path))} [{n.family or '-'}] {state}: {n.description}"
+        if n.synthesis is not None:
+            line += f"\n    Found: {n.synthesis.measured}\n    Finding: {n.synthesis.finding}"
+        elif n.result:
+            line += f"\n    Result: {n.result}"
+        if n.decision is not None:
+            line += f"\n    {n.decision.verdict.capitalize()} ({n.decision.stage}): " \
+                    f"{n.decision.reason}"
+        lines.append(line)
+    return "\n".join(lines) or "(no branches)"
 
 
 def best_node(nodes: list[Node]) -> Node | None:
@@ -158,6 +186,7 @@ class Orchestrator:
         if state.concluded_from is None and judged:
             state.concluded_from = judged[-1].id
 
+        covered_noted = False
         while True:
             await host._checkpoint(state)
             await state.amends_idle.wait()
@@ -179,11 +208,11 @@ class Orchestrator:
                 break
             await host._step(state, lambda n=node: self._advance(host, state, n))
             host._boundary(state)
-            if self._covered(state):
-                emitter.emit(Activity, message="Every objective is covered and the best "
-                                               "result's advice was to stop.")
-                state.concluded_from = best_node(state.nodes).id  # type: ignore[union-attr]
-                break
+            if not covered_noted and self._covered(state):
+                covered_noted = True  # the run does not stop here: the other branches finish first
+                emitter.emit(Activity, message="Every objective is covered and the best result's "
+                                               "advice was to stop; the branches still waiting "
+                                               "finish before the conclusion.")
         await self._finish(host, state)
 
     # ---- steps
@@ -195,19 +224,19 @@ class Orchestrator:
         host._emit(state, NodeUpdated, node=root, change="running")
         exp = await self.experiment.run(state.workspace, run.command, root.version or "")
         run.totals.experiments_run = experiments_run(state.nodes)
-        root.experiment, root.result = exp, describe(exp)
+        root.experiment, root.result = exp, brief(exp)
         root.phase = "complete"
         host._log(state, root.id, LogEntry(kind="error" if exp.error else "decision",
                                            title="Baseline measured" if not exp.error
                                            else "The baseline run failed",
-                                           text=root.result, phase="experiment"))
+                                           text=describe(exp), phase="experiment"))
         if exp.error:
             root.status = "failed"
             host._emit(state, NodeUpdated, node=root, change="failed")
             raise BaselineFailed(f"The experiment command failed on the original files "
                                  f"({exp.error}). Fix the command or the files and start again.")
         root.status = "done"
-        root.summary = f"baseline: {describe(exp)}"
+        root.summary = f"baseline: {brief(exp)}"
         host._emit(state, NodeUpdated, node=root, change="done")
 
     async def _advance(self, host: RunManager, state: LiveRun, node: Node) -> None:
@@ -231,16 +260,16 @@ class Orchestrator:
                                                text=run.command.text, phase="experiment"))
             exp = await self.experiment.run(state.workspace, run.command, node.version or "")
         run.totals.experiments_run = experiments_run(state.nodes)
-        node.experiment, node.result = exp, describe(exp)
+        node.experiment, node.result = exp, brief(exp)  # the full text goes to the log
         host._log(state, node.id, LogEntry(kind="error" if exp.error else "decision",
                                            title="Experiment failed" if exp.error
                                            else "Experiment measured"
                                            + (" (reused an identical earlier run)"
                                               if exp.cached else ""),
-                                           text=node.result, phase="experiment"))
+                                           text=describe(exp), phase="experiment"))
         if exp.error:
             state.dead_ends.append(DeadEnd(run_id=run.id, node_id=node.id,
-                                           description=node.description, reason=exp.error))
+                                           description=node.full_text(), reason=exp.error))
 
         await host._checkpoint(state)
         node.phase = "synthesis"
@@ -305,7 +334,7 @@ class Orchestrator:
             what = steering.apply_rerate(node, s, self.cfg)
             if what == "parked":
                 state.dead_ends.append(DeadEnd(run_id=run.id, node_id=node.id,
-                                               description=node.description,
+                                               description=node.full_text(),
                                                reason=node.decision.reason
                                                if node.decision else "parked"))
             elif what == "restored":
@@ -360,6 +389,11 @@ class Orchestrator:
 
     async def _finish(self, host: RunManager, state: LiveRun) -> None:
         run = state.run
+        # By now every branch that could run has run (the loop only ends on the budget or an empty
+        # queue). The answer branches off the best node when the objectives are covered and it
+        # said stop, else off the node judged last.
+        if self._covered(state) and (best_now := best_node(state.nodes)) is not None:
+            state.concluded_from = best_now.id
         if state.workspace is None:
             best = best_node(state.nodes)
             run.best_node_id = best.id if best else None
@@ -380,17 +414,19 @@ class Orchestrator:
                       else baseline_text(state.nodes)),
             findings="\n".join(f"- {f.node_id or '-'} [{f.verdict}] {f.text}"
                                for f in state.findings) or "(none)",
-            kept=kept)
+            branches=branches_text(state.nodes), kept=kept)
+        title = ""
         try:
             out = await AgentSession(self.llm, self.cfg).run(
                 FinalReport, prompt, model=self.cfg.agent_synthesis_model, purpose="final_report")
-            run.final_answer = out.value.answer
+            run.final_answer, title = out.value.answer, out.value.title
         except LLMError:  # the run's work is done; a missing report should not fail it
-            run.final_answer = f"Kept: {kept}.\nFindings:\n" + "\n".join(
-                f"- [{f.verdict}] {f.text}" for f in state.findings)
-        self._conclude(host, state)
+            run.final_answer = (f"Kept: {kept}.\nBranches:\n{branches_text(state.nodes)}\n"
+                                f"Findings:\n" + "\n".join(
+                                    f"- [{f.verdict}] {f.text}" for f in state.findings))
+        self._conclude(host, state, title)
 
-    def _conclude(self, host: RunManager, state: LiveRun) -> Node:
+    def _conclude(self, host: RunManager, state: LiveRun, title: str = "") -> Node:
         """The answer as a conclusion node, a child of the node the run ended on."""
         existing = next((n for n in state.nodes if n.type == "conclusion"), None)
         if existing is not None:  # a run recovered after its answer was already written
@@ -400,10 +436,12 @@ class Orchestrator:
         parent = (by_id.get(state.concluded_from or "")
                   or next(n for n in state.nodes if n.parent_id is None))
         answer = state.run.final_answer or ""
+        title = " ".join(title.split())[:120]
         node = Node(id=next_node_ids(state.nodes, 1)[0], run_id=state.run.id,
                     parent_id=parent.id, depth=parent.depth + 1, type="conclusion",
                     status="done", phase="complete", decided_by="agent",
-                    description="Conclusion: the run's answer",
+                    description=f"Conclusion: {title}" if title else "Conclusion",
+                    combines=[n.id for n in state.nodes if n.synthesis is not None],  # every branch
                     summary=(answer.strip().splitlines() or [""])[0][:200], result=answer,
                     criteria_progress=sorted({o for n in state.nodes if n.status == "done"
                                               for o in n.criteria_progress}))

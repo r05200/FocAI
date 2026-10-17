@@ -168,6 +168,34 @@ def describe(run: ExperimentRun) -> str:
     return f"Measured in {run.duration_s:.1f}s: {metrics or json.dumps(run.result)[:800]}"
 
 
+BRIEF_CHARS = 400
+
+
+def brief(run: ExperimentRun) -> str:
+    """The short summary kept on the node (Node.result). describe() is the full text, which goes
+    to the judge prompts and the node's log."""
+    resources = (run.result or {}).get("resources")
+    if run.error:
+        text = f"FAILED: {run.error}."
+    elif isinstance(resources, list):
+        vault = sum(1 for r in resources if r.get("source") == "vault")
+        best = "; ".join(str(r.get("title", ""))[:60] for r in resources[:3])
+        text = (f"Found {len(resources)} resource(s) ({vault} vault, {len(resources) - vault} "
+                f"web)" + (f": {best}" if best else ""))
+    else:
+        metrics = ", ".join(f"{k}={v:g}" for k, v in list(run.metrics.items())[:12])
+        text = f"Measured in {run.duration_s:.1f}s: {metrics or 'no numeric result'}"
+    return text if len(text) <= BRIEF_CHARS else text[: BRIEF_CHARS - 1] + "…"
+
+
+def compact(run: ExperimentRun) -> None:
+    """Drop the page excerpts from a research result once it is judged; the node's log keeps
+    the full text."""
+    for r in (run.result or {}).get("resources") or []:
+        if isinstance(r, dict):
+            r.pop("excerpt", None)
+
+
 def describe_resources(run: ExperimentRun, resources: list) -> str:
     lines = []
     for r in resources[:12]:

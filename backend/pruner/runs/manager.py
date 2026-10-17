@@ -703,7 +703,7 @@ class RunManager:
                     run.primary_person, title=f"Restored: {node.summary or node.description}",
                     summary=(f"{run.primary_person} restored this branch after it was parked in "
                              f"run {run.id}" + (f" ({earlier})" if earlier else "") + "."),
-                    source_text=node.description, kind="correction")
+                    source_text=node.full_text(), kind="correction")
                 state.emitter.emit(VaultItemAdded, item=result.item, edges=result.edges)
             except (LLMError, OSError) as e:  # the vault is a bonus; the run goes on
                 log.warning("could not file the correction for %s: %s", node.id, e)

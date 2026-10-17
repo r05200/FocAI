@@ -48,7 +48,7 @@ def apply(run: Run, nodes: Sequence[Node], dead_ends: list[DeadEnd], node: Node,
         node.decided_by = "human"
         if not any(d.node_id == node.id for d in dead_ends):
             dead_ends.append(DeadEnd(run_id=run.id, node_id=node.id,
-                                     description=node.description, reason="Parked by hand."))
+                                     description=node.full_text(), reason="Parked by hand."))
         return [(node, "parked")]
     path = ([node] if action == "keep"
             else [n for n in ancestors(nodes, node) if n.status == "parked"])

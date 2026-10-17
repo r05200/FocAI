@@ -37,7 +37,7 @@ from pruner.core.models import (
 )
 from pruner.orchestrator.actions import NODE_ACTIONS, experiments_left, room_under
 from pruner.orchestrator.context import RunView, ancestors, build_context
-from pruner.orchestrator.experiment import describe
+from pruner.orchestrator.experiment import compact, describe
 from pruner.pruning import postscorer as post
 from pruner.pruning.postscorer import PostScorer
 
@@ -111,6 +111,7 @@ class SynthesisPhase:
             try:
                 scored = await self.postscorer.score(
                     node, question=run.question, objectives=run.objectives,
+                    result=describe(node.experiment),
                     people=run.vault_people, baseline=baseline, dead_ends=state.dead_ends,
                     instructions=run.instructions, directives=run.directives)
             except (LLMError, ValueError) as e:  # the judge is advice; synthesis goes on
@@ -148,6 +149,7 @@ class SynthesisPhase:
                               confidence=s.confidence, finding=s.finding,
                               next_action=s.next_action, next_reason=s.next_reason,
                               action_targets=s.action_targets, action_brief=s.action_brief)
+        compact(node.experiment)  # the judged text is in the node's log; keep the node light
         node.synthesis, node.verdict = synthesis, verdict
         node.summary = s.finding
         node.phase = "complete"
@@ -186,6 +188,6 @@ class SynthesisPhase:
                 await host.vault.ingest_learned(
                     run.primary_person, title=s.finding,
                     summary=f"{s.verdict.capitalize()} in run {run.id}: {s.measured}",
-                    source_text=f"{node.description}\n{describe(node.experiment)}")
+                    source_text=f"{node.full_text()}\n{describe(node.experiment)}")
             except (LLMError, OSError) as e:  # the vault is a bonus; the run goes on
                 log.warning("could not file the finding of %s in the vault: %s", node.id, e)
