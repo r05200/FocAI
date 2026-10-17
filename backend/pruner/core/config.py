@@ -69,6 +69,10 @@ class Config:
     experiment_timeout_s: float
     experiment_output_cap: int  # bytes of stdout and of stderr kept (the tail)
     code_context_chars: int  # how much file text goes into a prompt
+    # A proposed edit is refused when it is bigger than this (keeps experiments small and focused).
+    max_diff_lines: int  # added + removed lines
+    max_edit_files: int
+    max_edits: int  # search/replace edits plus new files
 
     # --- Scoring thresholds (on the judges' 1 to 10 scale; tune on the demo question) ---
     pre_score_min: float  # candidates with an overall score below this are parked
@@ -141,6 +145,9 @@ def get_config() -> Config:
         experiment_timeout_s=_env_float("EXPERIMENT_TIMEOUT_S", 600.0),
         experiment_output_cap=_env_int("EXPERIMENT_OUTPUT_CAP", 20_000),
         code_context_chars=_env_int("CODE_CONTEXT_CHARS", 16_000),
+        max_diff_lines=_env_int("MAX_DIFF_LINES", 40),
+        max_edit_files=_env_int("MAX_EDIT_FILES", 3),
+        max_edits=_env_int("MAX_EDITS", 6),
         pre_score_min=_env_float("PRE_SCORE_MIN", 2.0),
         run_score_min=_env_float("RUN_SCORE_MIN", 6.0),
         post_score_min=_env_float("POST_SCORE_MIN", 4.0),

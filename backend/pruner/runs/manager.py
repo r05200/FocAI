@@ -35,6 +35,11 @@ files (workspace/workspace.py; they are edited in place later), then the objecti
 the run command is taken from the user's own text (runs/command.py). If no command can be verified,
 the run asks for it (a "command" question) and waits until it is answered.
 
+Orchestrator: a run with `paths`, given an orchestrator, is handed to it (orchestrator/loop.py):
+it owns the tree and calls back here for events, logs, level boundaries, the pause gate and the
+abortable step (_step), so pause, stop and instructions behave the same. Runs without files keep
+the single agent turn (_single_turn).
+
 Tools: with a vault store, the agent's step gets its tools (agent/tools.py phase_tools) through a
 ToolRunner. Every call is logged on the node with the reason the agent gave (node_log events,
 data/runs/<id>/logs/<node>.jsonl); the write tools add to the run's findings log and run vault.
@@ -49,8 +54,10 @@ import asyncio
 import copy
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from contextlib import ExitStack
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, TypeVar
 
 from pruner.agent.agent import Agent
 from pruner.agent.amend import AmendObjectivesAgent
@@ -99,7 +106,12 @@ from pruner.runs.store import RunStore
 from pruner.vault.store import VaultStore
 from pruner.workspace.workspace import Workspace
 
+if TYPE_CHECKING:
+    from pruner.orchestrator.loop import Orchestrator
+
 log = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 
 class Emitter:
@@ -184,9 +196,11 @@ class RunManager:
     def __init__(self, store: RunStore, agent: Agent, objectives: ObjectiveMaker,
                  cfg: Config | None = None, *,
                  amender: AmendObjectivesAgent | None = None,
-                 vault: VaultStore | None = None) -> None:
+                 vault: VaultStore | None = None,
+                 orchestrator: Orchestrator | None = None) -> None:
         self.store, self.agent, self.objectives, self.amender = store, agent, objectives, amender
         self.vault = vault  # gives the agent its tools; without it the agent answers from the prompt
+        self.orchestrator = orchestrator  # runs with files go through it (orchestrator/loop.py)
         self.cfg = cfg or get_config()
         self._live: dict[str, LiveRun] = {}
 
@@ -286,6 +300,8 @@ class RunManager:
         llms = [self.objectives.llm, self.agent.llm]
         if self.amender is not None:
             llms.append(self.amender.scorer.llm)
+        if self.orchestrator is not None:
+            llms += self.orchestrator.llms()
         stack = ExitStack()
         for llm in dict.fromkeys(llms):  # the scorers and objectives usually share one LLM
             stack.enter_context(llm.scope(run_id))
@@ -383,6 +399,10 @@ class RunManager:
         await self._ask(state, (f"What command runs one experiment in {root}? ({why}.) Type it "
                                 f"exactly as it should run, e.g. `python bench.py`; it should "
                                 f"print or write a JSON result."), "command")
+
+    @staticmethod
+    def _emit(state: LiveRun, cls: type[EventBase], **fields) -> EventBase:
+        return state.emitter.emit(cls, **fields)
 
     def _log(self, state: LiveRun, node_id: str, entry: LogEntry) -> None:
         self.store.append_log(state.run.id, node_id, entry)
@@ -535,17 +555,14 @@ class RunManager:
             if state.amends_open == 0:
                 state.amends_idle.set()
 
-    async def _step(self, state: LiveRun, node: Node):
-        """The agent's step on `node`. An instruction that arrives meanwhile aborts it: the level
-        is rewound, the amendment finishes, and the step starts again with the new instructions."""
-        run = state.run
+    async def _step(self, state: LiveRun, make: Callable[[], Awaitable[T]]) -> T:
+        """Run one step of the agent (`make()` starts it). An instruction that arrives meanwhile
+        aborts it: the level is rewound, the amendment finishes, and the step starts again with
+        the new instructions."""
         while True:
             await self._checkpoint(state)
             await state.amends_idle.wait()
-            step = asyncio.create_task(self.agent.run(
-                question=run.question, objectives=run.objectives,
-                instructions=run.instructions, directives=run.directives,
-                runner=self._runner(state, node)))
+            step = asyncio.create_task(make())
             state.step = step
             try:
                 return await step
@@ -558,48 +575,61 @@ class RunManager:
             finally:
                 state.step = None
 
+    async def _single_turn(self, state: LiveRun):
+        """A run without an orchestrator (or without files): one agent turn on a root node."""
+        run, emitter = state.run, state.emitter
+        await self._checkpoint(state)
+        attachments = await self._setup_files(state)
+        spec = next((i.text for i in run.instructions if i.kind == "spec"), "")
+        run.objectives, candidate = await self.objectives.create_full(
+            question=run.question, spec=spec, directives=run.directives,
+            attachments=attachments)
+        emitter.emit(ObjectivesUpdated, objectives=run.objectives)
+        await self._settle_command(state, candidate, attachments)
+
+        root = Node(id="n1", run_id=run.id, type="hypothesis", description=run.question,
+                    status="running",
+                    version=state.workspace.info.applied_version if state.workspace else None)
+        state.nodes.append(root)
+        emitter.emit(NodeCreated, node=root)
+        emitter.emit(Activity, message="The agent is working on the question.", node_id=root.id)
+        emitter.emit(NodeUpdated, node=root, change="running")
+        self._boundary(state)  # level 0 created
+
+        result = await self._step(state, lambda: self.agent.run(
+            question=run.question, objectives=run.objectives, instructions=run.instructions,
+            directives=run.directives, runner=self._runner(state, root)))
+        root.tool_calls = {"hypothesis": len(result.records)} if result.records else {}
+        return root, result
+
     async def _run(self, state: LiveRun) -> None:
         run, emitter, nodes = state.run, state.emitter, state.nodes
         started = time.time()
         try:
+            single = None
             with self._scopes(run.id):
-                await self._checkpoint(state)
-                attachments = await self._setup_files(state)
-                spec = next((i.text for i in run.instructions if i.kind == "spec"), "")
-                run.objectives, candidate = await self.objectives.create_full(
-                    question=run.question, spec=spec, directives=run.directives,
-                    attachments=attachments)
-                emitter.emit(ObjectivesUpdated, objectives=run.objectives)
-                await self._settle_command(state, candidate, attachments)
-
-                root = Node(id="n1", run_id=run.id, type="hypothesis", description=run.question,
-                            status="running",
-                            version=state.workspace.info.applied_version
-                            if state.workspace else None)
-                nodes.append(root)
-                emitter.emit(NodeCreated, node=root)
-                emitter.emit(Activity, message="The agent is working on the question.",
-                             node_id=root.id)
-                emitter.emit(NodeUpdated, node=root, change="running")
-                self._boundary(state)  # level 0 created
-
-                result = await self._step(state, root)
-                root.tool_calls = {"hypothesis": len(result.records)} if result.records else {}
-
+                if self.orchestrator is not None and run.paths:
+                    await self.orchestrator.run(self, state)
+                else:
+                    single = await self._single_turn(state)
                 await self._checkpoint(state)
                 await state.amends_idle.wait()  # let a queued amendment finish first
 
-            root.status = "done"
-            root.decided_by = "agent"
-            root.result = result.reply.answer
-            root.tokens = TokenUsage(agent=result.tokens.total)
-            emitter.emit(NodeUpdated, node=root, change="done")
-            self._boundary(state)  # level 0 completed
-            run.final_answer = result.reply.answer
+            if single is not None:
+                root, result = single
+                root.status = "done"
+                root.decided_by = "agent"
+                root.result = result.reply.answer
+                root.tokens = TokenUsage(agent=result.tokens.total)
+                emitter.emit(NodeUpdated, node=root, change="done")
+                self._boundary(state)  # level 0 completed
+                run.final_answer = result.reply.answer
             run.status = "done"
             run.paused = False
-            run.totals.tokens = root.tokens
+            run.totals.tokens = TokenUsage(agent=sum(n.tokens.agent for n in nodes),
+                                           scorer=sum(n.tokens.scorer for n in nodes))
             run.totals.nodes_total = len(nodes)
+            run.totals.nodes_parked = sum(n.status == "parked" for n in nodes)
             run.totals.elapsed_s = round(time.time() - started, 2)
             emitter.emit(RunCompleted, run=run)
         except (LLMCancelled, asyncio.CancelledError):
