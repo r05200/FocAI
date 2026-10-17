@@ -168,3 +168,19 @@ it needs, and what milestone or session it came from.
 [ ] The conclusion node: description is "Conclusion: <headline>", combines = every judged node,
     result = the full report. The run no longer stops early when all objectives are covered: the
     waiting branches run first (budget permitting), then the report combines every branch.
+
+--- Manual mode (backend done; frontend visuals still to build) ---------------------------------
+
+[x] POST /api/runs/{id}/manual {manual} -> the Run (200). StartRunRequest.manual starts a run in
+    it. On: before each experiment the run waits for a person to choose which hypothesis to run.
+[ ] Frontend:
+      - types.ts: Run.manual: boolean, Run.awaiting adds "choice", Node.awaiting_choice: boolean,
+        NodeChange adds "awaiting" (node_updated when the flag flips either way).
+      - The waiting node (awaiting_choice = true, the node whose proposals are ready) gets the
+        yellow line: grows like the blue edge line, then loops all the way round the node and
+        the ring pulses lightly until the flag goes false.
+      - The choice itself: on a waiting node's pending children, Keep (POST .../keep) = "run this
+        next"; Park = drop it. Confirming a "run" suggestion picks too. Switching manual off
+        while waiting lets the agent pick at once.
+      - Read Run.manual from the run (run_started / run_updated / GET /runs/{id}) so the switch
+        shows the backend's state after a reload instead of only the local store.

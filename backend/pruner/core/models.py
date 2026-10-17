@@ -306,6 +306,9 @@ class Node(BaseModel):
     missing_metrics: list[str] = Field(default_factory=list)
     # A person's keep/park/restore on a running node, applied once its step has finished.
     pending_action: HumanAction | None = None
+    # Manual mode: this node's proposals are ready and the run waits for a person to choose which
+    # one to pursue (keep it to run it, park the ones to drop). The UI rings the node in yellow.
+    awaiting_choice: bool = False
     tool_calls: dict[str, int] = Field(default_factory=dict)  # calls used, per phase
     created_at: float = Field(default_factory=time.time)
 
@@ -391,7 +394,12 @@ class Run(BaseModel):
     paths: list[str] = Field(default_factory=list)  # the user's files or folders (server paths)
     workspace: WorkspaceInfo | None = None
     command: RunCommand | None = None
-    awaiting: Literal["command"] | None = None  # the run waits for the user to answer a question
+    # The run waits for a person: to answer the command question, or (manual mode) to choose
+    # which proposed hypothesis to pursue next.
+    awaiting: Literal["command", "choice"] | None = None
+    # Manual mode: before each experiment the run waits for a person to choose which of the
+    # proposed hypotheses to pursue (POST /runs/{id}/manual). Off: it chooses by itself.
+    manual: bool = False
     best_node_id: str | None = None  # the node whose code is left applied at the end
     patch_ready: bool = False  # GET /runs/{id}/patch has the final changes
     final_answer: str | None = None
@@ -537,6 +545,7 @@ class StartRunRequest(BaseModel):
     # Files or folders on this machine the run works on. A folder means any file under it may be
     # changed; listed files mean only those. They are edited in place (a backup is kept).
     paths: list[str] = Field(default_factory=list, max_length=50)
+    manual: bool = False  # start in manual mode (it can be switched any time later)
 
     @field_validator("paths")
     @classmethod
@@ -558,6 +567,12 @@ class InstructionRequest(BaseModel):
     text: str = Field(min_length=1)
     # The current list of active directives, replacing the run's previous list. Omit to keep it.
     directives: list[str] | None = None
+
+
+class ManualRequest(BaseModel):
+    """Body of POST /runs/{id}/manual: turn manual mode on or off."""
+
+    manual: bool
 
 
 class InstructionToggle(BaseModel):

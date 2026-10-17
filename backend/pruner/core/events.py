@@ -51,7 +51,9 @@ class NodeCreated(EventBase):
     node: Node
 
 
-NodeChange = Literal["running", "scored", "done", "parked", "kept", "restored", "failed"]
+# awaiting = the node's awaiting_choice flag changed (manual mode: its proposals wait for a person)
+NodeChange = Literal["running", "scored", "done", "parked", "kept", "restored", "failed",
+                     "awaiting"]
 
 
 class NodeUpdated(EventBase):

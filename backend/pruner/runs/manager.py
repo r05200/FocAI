@@ -233,6 +233,9 @@ class LiveRun:
     jobs: list[Job] = field(default_factory=list)  # expansions a person asked for, run first
     concluded_from: str | None = None  # the node the run's answer branches from (the last judged)
     recovered: bool = False  # reloaded after a server restart: paused, with no task until resumed
+    # Set whenever something a manual-mode choice depends on changes (a keep, a park, a
+    # suggestion, manual mode switched, an amendment): the waiting loop looks again.
+    choice_changed: asyncio.Event = field(default_factory=asyncio.Event)
     level: int = 0  # depth of the level in progress
     level_start: RunSnapshot | None = None  # the tree when that level was created
     step: asyncio.Task | None = None  # the agent's step in flight, which an instruction aborts
@@ -299,7 +302,7 @@ class RunManager:
             people=people, primary_person=req.primary_person,
             vault_people=(req.vault_people if req.vault_people is not None
                           else [req.primary_person]),
-            mode=req.mode, paths=list(req.paths),
+            mode=req.mode, paths=list(req.paths), manual=req.manual,
             caps=Caps(max_depth=self.cfg.max_depth, branching=self.cfg.branching,
                       node_budget=self.cfg.node_budget,
                       tool_calls_per_phase=self.cfg.tool_calls_per_phase),
@@ -374,7 +377,7 @@ class RunManager:
                 state.emitter.emit(NodeUpdated, node=node, change="running")
         self._apply_pending(state)
 
-    MIRRORED = ("status", "decision", "decided_by", "pending_action", "closed",
+    MIRRORED = ("status", "decision", "decided_by", "pending_action", "closed", "awaiting_choice",
                 "directive_score", "directive_reason", "needs_remeasure", "missing_metrics")
 
     def _mirror(self, state: LiveRun, node: Node) -> None:
@@ -400,8 +403,17 @@ class RunManager:
         except (OSError, KeyError):
             log.exception("could not restore the files of run %s", state.run.id)
 
+    @staticmethod
+    def _drop_choice(state: LiveRun) -> None:
+        """A run that ends is no longer waiting for anyone's choice (manual mode)."""
+        for node in state.nodes:
+            node.awaiting_choice = False
+        if state.run.awaiting == "choice":
+            state.run.awaiting = None
+
     def _fail(self, state: LiveRun, error: str) -> None:
         """End the run with an error: the tree is saved as it is and the other tasks stop."""
+        self._drop_choice(state)
         self._settle_files(state)
         state.run.status = "failed"
         state.run.paused = False
@@ -654,6 +666,9 @@ class RunManager:
                 f"Your {action} on {node.id} applies once its current step finishes."))
         else:
             self._apply_human(state, node, action)
+            if action == "keep" and state.run.manual and node.status == "pending":
+                state.focus = node.id  # manual mode: keeping a waiting hypothesis picks it
+        state.choice_changed.set()
         self._save(state)
         return node
 
@@ -738,6 +753,7 @@ class RunManager:
                 raise human.IllegalAction(f"{s.node_id} is no longer in the tree")
             self._act_on(state, s, node)
         s.status = "confirmed" if confirm else "dismissed"
+        state.choice_changed.set()
         state.emitter.emit(SuggestionResolved, suggestion=s)
         self._save(state)
         return s
@@ -761,6 +777,22 @@ class RunManager:
             state.emitter.emit(Activity, node_id=node.id, message=(
                 f"New hypotheses from {node.id} ({job.mode.replace('_', ' ')}) come before "
                 f"the next experiment."))
+
+    async def set_manual(self, run_id: str, manual: bool) -> Run:
+        """Turn manual mode on or off. On: before each experiment the run waits for a person to
+        choose which hypothesis to pursue. Off: the agent chooses again, at once if the run was
+        waiting. KeyError if the run is unknown, RunNotRunning if it finished."""
+        state = self._running(run_id)
+        if state.run.manual != manual:
+            state.run.manual = manual
+            state.emitter.emit(RunUpdated, run=state.run)
+            state.emitter.emit(Activity, message=(
+                "Manual mode on: before each experiment the run waits for you to choose which "
+                "hypothesis to pursue." if manual else
+                "Manual mode off: the agent chooses what to run next again."))
+            self._save(state)
+        state.choice_changed.set()
+        return state.run
 
     # ---- instructions
 
@@ -865,6 +897,7 @@ class RunManager:
         state = self._live.get(run_id)
         await self.cancel(run_id)
         if state is not None:
+            self._drop_choice(state)
             await asyncio.to_thread(self._settle_files, state)
         event = self.store.mark_stopped(run_id, state.snapshot() if state else None)
         self.bus.publish(event)  # ends the run's open streams
@@ -907,6 +940,7 @@ class RunManager:
             state.amends_open -= 1
             if state.amends_open == 0:
                 state.amends_idle.set()
+            state.choice_changed.set()  # a re-rate may have parked or brought back candidates
 
     async def _amend_objectives(self, state: LiveRun, instruction: Instruction) -> list:
         """New objectives from the instruction; if any, the amend agent re-rates the tree and

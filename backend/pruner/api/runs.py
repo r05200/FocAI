@@ -13,6 +13,7 @@ from pruner.core.models import (
     Instruction,
     InstructionRequest,
     InstructionToggle,
+    ManualRequest,
     PauseResult,
     Run,
     RunSnapshot,
@@ -99,6 +100,22 @@ async def toggle_instruction(run_id: str, instruction_id: str, body: Instruction
     except KeyError as e:
         raise HTTPException(status_code=404, detail="run or instruction not found") from e
     except (RunNotRunning, ObjectivesNotReady, InstructionLocked) as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
+
+@router.post("/{run_id}/manual")
+async def set_manual_mode(run_id: str, body: ManualRequest, manager: Manager) -> Run:
+    """Turn manual mode on or off; returns the run. On: before each experiment the run waits for
+    a person to choose which proposed hypothesis to pursue. The nodes whose proposals wait get
+    `awaiting_choice: true` (node_updated "awaiting") and the run gets `awaiting: "choice"`
+    (run_updated). POST .../nodes/{node_id}/keep on a waiting hypothesis runs it next; .../park
+    drops it; confirming a "run" suggestion picks it too. Off: the agent chooses again, at once if
+    the run was waiting. 404 if the run is unknown, 409 if it already finished."""
+    try:
+        return await manager.set_manual(run_id, body.manual)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail="run not found") from e
+    except RunNotRunning as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
 
 

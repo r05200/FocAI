@@ -30,6 +30,11 @@ steer(), which re-rates the tree in one batched call and offers suggestions
 (orchestrator/steering.py). A person's keep/park/restore is applied by the manager
 (orchestrator/human.py); the loop just sees the new statuses.
 
+Manual mode (Run.manual): before each experiment the loop waits for a person to choose which
+waiting hypothesis to pursue. The nodes whose proposals wait get awaiting_choice (the UI rings
+them in yellow) and the run gets awaiting="choice". Keeping a waiting hypothesis picks it (it runs
+next), parking drops it, and turning manual mode off lets the agent choose again at once.
+
 Recovery: after a server restart the manager reloads a running run paused, from the last level
 boundary that was saved (RunManager.recover); resuming calls run() again, which skips every stage
 the saved tree already has (objectives, root, baseline, first expansion).
@@ -54,6 +59,7 @@ from pruner.core.events import (
     NodeCreated,
     NodeUpdated,
     ObjectivesUpdated,
+    RunUpdated,
     VaultRetrieved,
 )
 from pruner.core.llm import LLM, LLMError
@@ -62,7 +68,7 @@ from pruner.orchestrator import steering
 from pruner.orchestrator.actions import experiments_run, plan_action, room_under, why_blocked
 from pruner.orchestrator.experiment import ExperimentPhase, Runner, brief, describe
 from pruner.orchestrator.proposer import HypothesisPhase, next_node_ids
-from pruner.orchestrator.queue import select_next
+from pruner.orchestrator.queue import candidates, select_next
 from pruner.orchestrator.research import ResearchPhase, queries_of
 from pruner.orchestrator.steering import Job
 from pruner.orchestrator.synthesis import SynthesisPhase, baseline_text
@@ -201,6 +207,12 @@ class Orchestrator:
                 emitter.emit(Activity, message=f"The experiment budget ({run.caps.node_budget})"
                                                f" is used up.")
                 break
+            if run.manual and self._needs_choice(state):
+                self._await_choice(host, state)
+                state.choice_changed.clear()
+                await state.choice_changed.wait()  # a keep, a park, a suggestion, manual off...
+                continue  # check pause, amendments, jobs and the budget again, then the choice
+            self._clear_choice(host, state)
             node = select_next(state.nodes, state.focus)
             state.focus = None
             if node is None:
@@ -291,6 +303,42 @@ class Orchestrator:
         await host._checkpoint(state)
         await self.hypothesis.expand(host, state, plan.parent, mode=plan.mode, brief=plan.brief,
                                      count=plan.count)
+
+    # ---- manual mode
+
+    @staticmethod
+    def _needs_choice(state: LiveRun) -> bool:
+        """Something could run next, and a person has not picked it yet."""
+        pool = {n.id for n in candidates(state.nodes)}
+        return bool(pool) and state.focus not in pool
+
+    def _await_choice(self, host: RunManager, state: LiveRun) -> None:
+        """Ring the nodes whose proposals wait for a person, and say the run waits."""
+        run = state.run
+        waiting = {n.parent_id for n in candidates(state.nodes)}
+        self._flag_choice(host, state, waiting)
+        if run.awaiting != "choice":
+            run.awaiting = "choice"
+            host._emit(state, RunUpdated, run=run)
+            host._emit(state, Activity, message=(
+                "Manual mode: the next hypotheses are ready. Keep the one to pursue (it runs "
+                "next) and park the ones to drop; turning manual mode off lets the agent choose."))
+        host._save(state)
+
+    def _clear_choice(self, host: RunManager, state: LiveRun) -> None:
+        self._flag_choice(host, state, set())
+        if state.run.awaiting == "choice":
+            state.run.awaiting = None
+            host._emit(state, RunUpdated, run=state.run)
+
+    @staticmethod
+    def _flag_choice(host: RunManager, state: LiveRun, waiting: set) -> None:
+        for node in state.nodes:
+            flag = node.id in waiting
+            if node.awaiting_choice != flag:
+                node.awaiting_choice = flag
+                host._mirror(state, node)
+                host._emit(state, NodeUpdated, node=node, change="awaiting")
 
     async def _run_job(self, host: RunManager, state: LiveRun, job: Job) -> None:
         node = next((n for n in state.nodes if n.id == job.node_id), None)
@@ -389,6 +437,7 @@ class Orchestrator:
 
     async def _finish(self, host: RunManager, state: LiveRun) -> None:
         run = state.run
+        self._clear_choice(host, state)
         # By now every branch that could run has run (the loop only ends on the budget or an empty
         # queue). The answer branches off the best node when the objectives are covered and it
         # said stop, else off the node judged last.
