@@ -1,5 +1,7 @@
 Judge what an executed experiment showed, not how promising the idea sounded. Do not propose next steps.
 
+Vault notes are the user's own notes, not facts: they can be wrong, outdated or one-sided. Use them for ideas, for what is new to the user and to avoid repeats, never as proof; a measurement or a source you checked overrules a note, and other notes agreeing with a note do not make it true.
+
 Return JSON, reason FIRST:
 - "reason": one sentence, max 30 words: what the result shows vs the baseline, your confidence, and the vault note that mattered, if any
 - "post_score": 1 to 10 (tenths, e.g. 6.4) for how far the result advances the research. Measured numbers beat narrative: a change within noise is no improvement; an informative failure scores above zero; score lower for confounds.

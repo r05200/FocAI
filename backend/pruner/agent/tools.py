@@ -122,8 +122,10 @@ def _corroboration_note(supports: int, agrees: int) -> dict[str, str]:
                      "than evidence)")
     if not parts:
         return {}
-    return {"corroboration_note": f"In the vault this note is {' and '.join(parts)}; weigh it a "
-                                  "bit higher (support counts for more than agreement)."}
+    return {"corroboration_note": f"In the vault this note is {' and '.join(parts)}; a somewhat "
+                                  "stronger lead (support counts for more than agreement), but "
+                                  "still an unverified note: other notes lining up does not make "
+                                  "it true."}
 
 
 def search_vault_tool(ctx: ToolContext) -> Tool:
@@ -182,8 +184,9 @@ def search_vault_tool(ctx: ToolContext) -> Tool:
                 "a link are under linked_items. Each note also counts the other notes that support "
                 "it (give evidence for it: supporting_notes) and that agree with it (same view, "
                 "not evidence: agreeing_notes); a guide to weigh it a bit higher, not proof. "
-                "Returns "
-                "nothing when no note is close enough: then rely on your own judgement.",
+                "Notes are the user's own, not a source of truth: use them as leads and check "
+                "them. Returns nothing when no note is close enough: then rely on your own "
+                "judgement.",
                 _schema({"query": {"type": "string"}}, ["query"]), search_vault)
 
 

@@ -143,3 +143,14 @@ it needs, and what milestone or session it came from.
     LLM calls repeat unless cached); confirmed-suggestion jobs and the run-vault ideas of the lost
     step are not rewound (a rerun can add a duplicate idea); path locks are per server process
     (several uvicorn workers would not share them).
+
+--- Paper links and vault notes ------------------------------------------------------------------
+
+[ ] Frontend: POST /api/vault/items now accepts a bare link as `text` (no file upload): the page is
+    fetched and the abstract is parsed; if none is found the item is filed with the summary
+    "No summary found." (or "No summary found (<why the page could not be read>)."). arXiv PDF
+    links are read from their abstract page; other PDFs are not parsed. The frontend may want to
+    show that summary text as "no summary".
+
+[ ] Vault notes are framed as the user's own unverified notes in every prompt and in the
+    search_vault tool (not a source of truth); a measurement or a checked source overrules them.

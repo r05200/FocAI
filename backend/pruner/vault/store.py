@@ -33,6 +33,7 @@ from typing import Literal
 import numpy as np
 from pydantic import BaseModel, Field
 
+from pruner.agent.web import PageFetcher
 from pruner.core import prompts
 from pruner.core.config import Config, get_config
 from pruner.core.fs import write_atomic
@@ -49,12 +50,14 @@ from pruner.core.models import (
     VaultSummary,
 )
 from pruner.vault import layout
+from pruner.vault.links import NO_SUMMARY, fetch_paper, link_of
 
 log = logging.getLogger(__name__)
 
 EDGES_FILE = "_edges.json"
 MAX_INGEST_CHARS = 12_000  # long texts are truncated before they reach the LLM
 MAX_TAGS = 5
+EMBEDDING_DIGITS = 4  # significant digits kept per stored embedding value (similarity shifts < 1e-4)
 
 
 # --------------------------------------------------------------------------- LLM output shapes
@@ -100,6 +103,26 @@ def unit_vectors(vectors: np.ndarray) -> np.ndarray:
     return vectors / np.where(norms == 0, 1, norms)
 
 
+def round_embedding(vector: list[float]) -> list[float]:
+    """Keep EMBEDDING_DIGITS significant digits per value: about 30% smaller files, and cosine
+    similarities move by less than 0.0001."""
+    return [float(f"{v:.{EMBEDDING_DIGITS}g}") for v in vector]
+
+
+def _items_json(items: list[dict]) -> str:
+    """Indented for reading, except each embedding sits on one line (they are long and never
+    edited by hand)."""
+    held = [round_embedding(e) if (e := item.get("embedding")) is not None else None
+            for item in items]
+    shown = [{**item, "embedding": f"__embedding_{i}__"} if item.get("embedding") is not None
+             else item for i, item in enumerate(items)]
+    text = json.dumps(shown, indent=1)
+    for i, emb in enumerate(held):
+        if emb is not None:
+            text = text.replace(f'"__embedding_{i}__"', json.dumps(emb, separators=(",", ":")))
+    return text
+
+
 def embedding_text(item: VaultItem) -> str:
     return f"{item.title}\n{item.summary}\n{item.source_text[:MAX_INGEST_CHARS]}"
 
@@ -109,8 +132,9 @@ def embedding_text(item: VaultItem) -> str:
 
 class VaultStore:
     def __init__(self, directory: Path | None = None, llm: LLM | None = None,
-                 cfg: Config | None = None) -> None:
+                 cfg: Config | None = None, fetcher: PageFetcher | None = None) -> None:
         self.cfg = cfg or get_config()
+        self.fetcher = fetcher or PageFetcher(self.cfg)  # reads paper links (vault/links.py)
         self.dir = directory or self.cfg.vault_dir
         self.llm = llm or LLM(self.cfg)
         self._items: dict[str, VaultItem] = {}
@@ -139,7 +163,7 @@ class VaultStore:
 
     def _save(self, person: str) -> None:
         items = [i.model_dump(mode="json") for i in self._items.values() if i.person == person]
-        write_atomic(self.dir / f"{person}.json", json.dumps(items, indent=1))
+        write_atomic(self.dir / f"{person}.json", _items_json(items))
         write_atomic(self.dir / EDGES_FILE,
                      json.dumps([e.model_dump(mode="json") for e in self._edges], indent=1))
 
@@ -274,6 +298,8 @@ class VaultStore:
     # ---- ingest
 
     async def ingest(self, req: IngestRequest) -> IngestResult:
+        if (link := link_of(req.text)) is not None:
+            return await self._ingest_link(req, link)
         async with self._lock:
             text = req.text.strip()[:MAX_INGEST_CHARS]
             draft = (await self.llm.generate(
@@ -287,6 +313,33 @@ class VaultStore:
                 person=req.person, kind=req.kind, title=one_line(req.title or draft.title),
                 summary=one_line(draft.summary), tags=tags, source_text=req.text.strip(),
                 investigate=draft.investigate,
+            )
+            return await self._file(item)
+
+    async def _ingest_link(self, req: IngestRequest, link: str) -> IngestResult:
+        """A link instead of text: fetch the page and let the vault LLM take the abstract from
+        it. No abstract, or a page that cannot be read: the summary says "No summary found"."""
+        page = await fetch_paper(self.fetcher, link)
+        if page.problem:
+            draft = IngestDraft(title=link, summary=f"{NO_SUMMARY} ({page.problem}).")
+            source = link
+        else:
+            text = page.text[:MAX_INGEST_CHARS]
+            draft = (await self.llm.generate(
+                IngestDraft,
+                prompts.render("vault_ingest_link", kind=req.kind, url=link,
+                               page_title=page.title or "(none)", text=text),
+                model=self.cfg.vault_model, purpose="vault_ingest",
+            )).value
+            draft.summary = one_line(draft.summary) or f"{NO_SUMMARY}."
+            draft.title = one_line(draft.title) or page.title or link
+            source = f"{link}\n\n{text}"
+        tags = list(dict.fromkeys(t for t in map(normalize_tag, req.tags) if t))[:MAX_TAGS]
+        async with self._lock:
+            item = VaultItem(
+                person=req.person, kind=req.kind, title=one_line(req.title or draft.title),
+                summary=one_line(draft.summary), tags=tags, source_text=source,
+                investigate=False,
             )
             return await self._file(item)
 
@@ -304,8 +357,8 @@ class VaultStore:
 
     async def _file(self, item: VaultItem) -> IngestResult:
         """Embed a new item, link it to its neighbors, place it and save it (lock held)."""
-        [item.embedding] = await self.llm.embed([embedding_text(item)],
-                                                purpose="vault_embed")
+        [vector] = await self.llm.embed([embedding_text(item)], purpose="vault_embed")
+        item.embedding = round_embedding(vector)
 
         neighbors = self.nearest(item.embedding, k=self.cfg.neighbors_per_item,
                                  threshold=self.cfg.link_threshold)

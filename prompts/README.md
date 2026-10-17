@@ -19,3 +19,4 @@ so they can be tuned without touching logic. Planned (added as each step is buil
 - `steer_rate.md` (done): the steering re-rate after an instruction or a chip toggle: how relevant each node is now (1-10) and a result key it did not measure
 - `propose_research.md` (done): the hypothesis phase of a run without files: guesses at what the user wants to see, each with search queries
 - `synthesize_research.md` (done): judge a research experiment: are the resources found relevant to the objectives
+- `vault_ingest_link.md` (done): a paper link -> title and the abstract (or "No summary found.") parsed from the fetched page

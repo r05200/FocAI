@@ -91,7 +91,13 @@ async def ingest_item(body: IngestRequest, store: Store) -> IngestResult:
     """Ingest text: the vault LLM writes a title and summary blurb (tags are the ones you send); the item is embedded,
     linked to its nearest neighbors, and each link is labelled contradicts / supports / agrees /
     investigate (a question worth looking into) with a one-line reason. Neighbors judged
-    unrelated get no link."""
+    unrelated get no link.
+
+    `text` can also be just a link to a paper (no file upload): the page is fetched (public
+    http(s) pages only; an arXiv PDF link is read from its abstract page) and the vault LLM takes
+    the abstract, or the nearest thing the page offers, from it. If there is none, or the page
+    cannot be read (unreachable, an error status, a PDF, no text), the item is still filed with
+    the summary "No summary found" (and the reason, when the page could not be read)."""
     try:
         return await store.ingest(body)
     except LLMError as e:
