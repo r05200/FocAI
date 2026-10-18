@@ -35,6 +35,10 @@ waiting hypothesis to pursue. The nodes whose proposals wait get awaiting_choice
 them in yellow) and the run gets awaiting="choice". Keeping a waiting hypothesis picks it (it runs
 next), parking drops it, and turning manual mode off lets the agent choose again at once.
 
+Forks (orchestrator/fork.py): after amended objectives the amend agent may suggest a fork; while
+it waits for a person (Run.awaiting = "fork") the loop starts no experiment and no proposal (an
+experiment already running finishes first). A confirmed fork queues a Job at the fork point.
+
 Recovery: after a server restart the manager reloads a running run paused, from the last level
 boundary that was saved (RunManager.recover); resuming calls run() again, which skips every stage
 the saved tree already has (objectives, root, baseline, first expansion).
@@ -46,7 +50,6 @@ logs, level boundaries, the pause gate, the abortable step).
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
@@ -63,10 +66,10 @@ from pruner.core.events import (
     VaultRetrieved,
 )
 from pruner.core.llm import LLM, LLMError
-from pruner.core.models import DeadEnd, ForkRequest, HypothesisSpec, LogEntry, Node
-from pruner.orchestrator import steering
+from pruner.core.models import DeadEnd, HypothesisSpec, LogEntry, Node
+from pruner.orchestrator import fork, steering
 from pruner.orchestrator.actions import experiments_run, plan_action, room_under, why_blocked
-from pruner.orchestrator.context import best_node, previous_measured
+from pruner.orchestrator.context import ancestors, best_node, previous_measured
 from pruner.orchestrator.experiment import ExperimentPhase, Runner, brief, describe
 from pruner.orchestrator.proposer import HypothesisPhase, next_node_ids
 from pruner.orchestrator.queue import candidates, select_next
@@ -178,6 +181,7 @@ class Orchestrator:
             await host._step(state, lambda: self._baseline(host, state, root))
             host._boundary(state)
         if not any(n.parent_id == root.id for n in state.nodes):
+            await host._hold_for_fork(state)
             await host._step(state, lambda: self.hypothesis.expand(host, state, root,
                                                                    mode="initial"))
             host._boundary(state)
@@ -189,6 +193,9 @@ class Orchestrator:
         while True:
             await host._checkpoint(state)
             await state.amends_idle.wait()
+            if run.awaiting == "fork":  # a fork waits for a person: start nothing new
+                await host._hold_for_fork(state)
+                continue
             if state.jobs:  # what a person asked for goes first; dropped only once it is done
                 job = state.jobs[0]
                 await host._step(state, lambda j=job: self._run_job(host, state, j))
@@ -197,6 +204,7 @@ class Orchestrator:
                 host._boundary(state)
                 continue
             if experiments_run(state.nodes) >= run.caps.node_budget:
+                run.end_reason = "limit"
                 emitter.emit(Activity, message=f"The experiment budget ({run.caps.node_budget})"
                                                f" is used up.")
                 break
@@ -247,8 +255,8 @@ class Orchestrator:
     async def _advance(self, host: RunManager, state: LiveRun, node: Node) -> None:
         """Run one waiting node through experiment and synthesis, then act on its advice."""
         run = state.run
-        if node.status != "pending":  # a person parked it between its selection and now
-            return
+        if node.status != "pending" or all(n is not node for n in state.nodes):
+            return  # parked between its selection and now, or the tree was replaced (fork undo)
         if node.revert_to is not None:
             await self._revert(host, state, node)
             return
@@ -304,6 +312,10 @@ class Orchestrator:
             node.closed = True
             return
         await host._checkpoint(state)
+        await host._hold_for_fork(state)  # the experiment finished; new proposals wait
+        if all(n is not plan.parent for n in state.nodes) or any(
+                c.parent_id == plan.parent.id and c.branch_conclusion for c in state.nodes):
+            return  # a fork or a person's conclusion meanwhile ended what this step was about
         await self.hypothesis.expand(host, state, plan.parent, mode=plan.mode, brief=plan.brief,
                                      count=plan.count)
         # Manual mode: after a step the wrong way, going back is always one of the options.
@@ -311,6 +323,69 @@ class Orchestrator:
             target = previous_measured(state.nodes, node)
             if target is not None and room_under(run, state.nodes, node) > 0:
                 self._offer_revert(host, state, node, target)
+
+    # ---- concluding one branch (a person's Conclude)
+
+    async def conclude_branch(self, host: RunManager, state: LiveRun, node: Node) -> Node:
+        """End exploration at `node`: everything under it is parked (restorable, results kept;
+        a running node once its experiment finishes), nothing new grows from it, and a
+        conclusion written from the path root -> node becomes its child. The rest of the run
+        carries on. One LLM call (the final-report prompt, given only this path)."""
+        run = state.run
+        path = ancestors(state.nodes, node)
+        under = [n for n in state.nodes if n.id != node.id and n.type != "conclusion"
+                 and node.id in {a.id for a in ancestors(state.nodes, n)[:-1]}
+                 and n.status not in ("parked", "failed")]
+        why = (f"Dropped: a person concluded the branch at {node.id} (restorable; its results "
+               f"are kept).")
+        for n in under:
+            if n.status == "running":
+                state.fork_parks[n.id] = why
+                continue
+            fork.park_for_fork(n, node.id, reason=why)
+            host._mirror(state, n)
+            host._emit(state, NodeUpdated, node=n, change="parked")
+        node.closed = True
+        host._mirror(state, node)
+        on_path = {n.id for n in path}
+        findings = [f for f in state.findings if f.node_id in on_path]
+        prompt = prompts.render(
+            "final_report", question=run.question,
+            instructions=prompts.render_instructions(run.instructions, run.directives),
+            objectives=prompts.render_objectives(run.objectives),
+            baseline=("(none: a research run without files)" if state.workspace is None
+                      else baseline_text(state.nodes)),
+            findings="\n".join(f"- {f.node_id or '-'} [{f.verdict}] {f.text}"
+                               for f in findings) or "(none)",
+            branches=branches_text(path),
+            kept=f"this branch only, ending at {node.id}: {node.summary or node.description}")
+        title = ""
+        try:
+            out = await AgentSession(self.llm, self.cfg).run(
+                FinalReport, prompt, model=self.cfg.agent_synthesis_model,
+                purpose="final_report")
+            answer, title = out.value.answer, out.value.title
+        except LLMError:  # a missing report should not lose the person's conclusion
+            answer = f"Concluded at {node.id}.\nBranch:\n{branches_text(path)}"
+        title = " ".join(title.split())[:120]
+        conclusion = Node(
+            id=next_node_ids(state.nodes, 1)[0], run_id=run.id, parent_id=node.id,
+            depth=node.depth + 1, type="conclusion", status="done", phase="complete",
+            decided_by="human", branch_conclusion=True,
+            description=f"Conclusion: {title}" if title else f"Conclusion at {node.id}",
+            summary=(answer.strip().splitlines() or [""])[0][:200], result=answer,
+            combines=[n.id for n in path if n.synthesis is not None],
+            criteria_progress=sorted({o for n in path if n.status == "done"
+                                      for o in n.criteria_progress}))
+        host._add_outside_step(state, conclusion)
+        host._log(state, node.id, LogEntry(kind="decision", title=f"Concluded at {node.id}",
+                                           text=f"Parked {len(under)} node(s) under it."))
+        host._log(state, conclusion.id, LogEntry(kind="decision", title="Branch concluded",
+                                                 text=answer))
+        host._emit(state, Activity, node_id=node.id, message=(
+            f"Concluded the branch at {node.id}: {len(under)} node(s) under it parked; the rest "
+            f"of the run carries on."))
+        return conclusion
 
     # ---- reverting
 
@@ -357,6 +432,7 @@ class Orchestrator:
                 text=why_blocked(state.run, state.nodes, node)))
             return
         await host._checkpoint(state)
+        await host._hold_for_fork(state)
         await self.hypothesis.expand(
             host, state, node, mode="new_hypothesis", count=min(2, room),
             brief=(f"{wrong.id} ({wrong.description}) was a step in the wrong direction, so this "
@@ -402,7 +478,7 @@ class Orchestrator:
 
     async def _run_job(self, host: RunManager, state: LiveRun, job: Job) -> None:
         node = next((n for n in state.nodes if n.id == job.node_id), None)
-        if node is None:
+        if node is None or job not in state.jobs:  # gone, or dropped (an undone fork)
             return
         room = room_under(state.run, state.nodes, node)
         if room <= 0:
@@ -416,9 +492,11 @@ class Orchestrator:
     # ---- steering
 
     async def steer(self, host: RunManager, state: LiveRun, *, change: str,
-                    instruction_id: str | None, forks: Sequence[ForkRequest] = ()) -> None:
+                    instruction_id: str | None) -> None:
         """One batched re-rate of the tree after an instruction or a chip toggle, then new
-        suggestions (orchestrator/steering.py). Called by the manager's amendment task."""
+        suggestions (orchestrator/steering.py). Scores only: it never parks or restores (that
+        comes from a confirmed fork or a person). Called by the manager's amendment task; the
+        amend agent then picks a fork point from these scores."""
         run = state.run
         targets = steering.rerate_targets(state.nodes)
         if not targets:
@@ -434,20 +512,11 @@ class Orchestrator:
                                for f in state.findings[-15:]) or "(none)",
             measured=measured)
         by_id = {n.id: n for n in state.nodes}
-        counts = {"parked": 0, "restored": 0}
         for s in scored:
             node = by_id.get(s.node_id)
             if node is None:  # removed by a rewind meanwhile
                 continue
             what = steering.apply_rerate(node, s, self.cfg)
-            if what == "parked":
-                state.dead_ends.append(DeadEnd(run_id=run.id, node_id=node.id,
-                                               description=node.full_text(),
-                                               reason=node.decision.reason
-                                               if node.decision else "parked"))
-            elif what == "restored":
-                state.dead_ends[:] = [d for d in state.dead_ends if d.node_id != node.id]
-            counts[what] = counts.get(what, 0) + 1
             host._mirror(state, node)
             host._log(state, node.id, LogEntry(
                 kind="decision",
@@ -458,10 +527,10 @@ class Orchestrator:
         select_next(state.nodes)  # refresh the queue priorities the suggestions use
         remeasure = sum(n.needs_remeasure for n in state.nodes)
         host._emit(state, Activity, message=(
-            f"Re-rated {len(scored)} node(s) for the new direction: {counts['parked']} parked, "
-            f"{counts['restored']} back in the queue, {remeasure} need re-measuring."))
+            f"Re-rated {len(scored)} node(s) for the new direction ({remeasure} need "
+            f"re-measuring); nothing was parked or restored."))
         host._offer(state, steering.suggest(run, state.nodes, self.cfg,
-                                            instruction_id=instruction_id, forks=forks))
+                                            instruction_id=instruction_id))
 
     def _covered(self, state: LiveRun) -> bool:
         """Every objective advanced by some finished node, and the best node said stop."""
@@ -537,7 +606,8 @@ class Orchestrator:
 
     def _conclude(self, host: RunManager, state: LiveRun, title: str = "") -> Node:
         """The answer as a conclusion node, a child of the node the run ended on."""
-        existing = next((n for n in state.nodes if n.type == "conclusion"), None)
+        existing = next((n for n in state.nodes if n.type == "conclusion"
+                         and not n.branch_conclusion), None)
         if existing is not None:  # a run recovered after its answer was already written
             existing.result = state.run.final_answer
             return existing

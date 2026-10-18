@@ -46,3 +46,6 @@ backend/tests/
 
 # Runtime data
 data/
+
+# Claude Code's local project settings and state
+.claude/

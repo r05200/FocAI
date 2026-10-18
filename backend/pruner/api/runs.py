@@ -9,7 +9,9 @@ from pruner.api.common import SSE_HEADERS, SSE_RESPONSES
 from pruner.api.deps import get_agent_llm, get_run_manager, get_run_store, get_supporting_llm
 from pruner.core.llm import LLM
 from pruner.core.models import (
+    ForkConfirmRequest,
     ForkRequest,
+    ForkUndoRequest,
     Instruction,
     InstructionRequest,
     InstructionToggle,
@@ -20,6 +22,8 @@ from pruner.core.models import (
     StartRunRequest,
     StopResult,
 )
+from pruner.orchestrator.fork import ForkClosed, UndoNeedsConfirm
+from pruner.orchestrator.human import IllegalAction
 from pruner.runs.manager import (
     InstructionLocked,
     ObjectivesNotReady,
@@ -69,11 +73,11 @@ async def get_run(run_id: str, store: Store) -> RunSnapshot:
 @router.post("/{run_id}/instructions", status_code=202)
 async def add_instruction(run_id: str, body: InstructionRequest, manager: Manager) -> Instruction:
     """Send a further prompt to a run. It is recorded at once (instruction_added). Then, in the
-    background, it is turned into new objectives (objectives_updated) and, if any were added, the
-    amend-objectives agent re-rates the tree from the root (node_updated "scored") and requests a
-    fork wherever every branch under a node scored low (an activity line; GET /runs/{id}/forks).
-    On a run with files the whole tree is then re-rated for the new direction in one call and 2-3
-    suggestions are offered (suggestions_ready; forks are among them).
+    background, it is turned into new objectives (objectives_updated); the whole tree is re-rated
+    for the new direction in one call (node_updated "scored"; nothing is parked) and 2-3
+    suggestions are offered (suggestions_ready). If objectives were added, the amend agent also
+    suggests a fork (fork_updated, a suggestion with action "fork", Run.awaiting = "fork"): the
+    run starts nothing new until a person confirms or dismisses it (POST .../forks/{id}/...).
     `directives`, when given, replaces the run's directive list.
 
     409 while the objectives are still being written, and once the run has finished (done, failed
@@ -157,10 +161,59 @@ async def get_patch(run_id: str, store: Store) -> str:
 
 @router.get("/{run_id}/forks")
 async def list_forks(run_id: str, store: Store) -> list[ForkRequest]:
-    """Where the amend-objectives agent asked to restart exploration (forking is not built)."""
+    """Every fork the amend agent suggested for this run, oldest first, with its status
+    (requested / confirmed / dismissed / replaced / undone). Run.fork_id names the one waiting
+    for a decision (Run.awaiting = "fork")."""
     if store.snapshot(run_id) is None:
         raise HTTPException(status_code=404, detail="run not found")
     return store.forks(run_id)
+
+
+@router.get("/{run_id}/forks/{fork_id}/preview")
+async def preview_fork(
+    run_id: str, fork_id: str, manager: Manager,
+    at: str | None = Query(None, description="Move F to this node (on the path, or below F)."),
+) -> ForkRequest:
+    """The fork card for F (or F moved to `at`): the path with scores, the deeper choices, the
+    nodes it would park, the keeps it overrides and the flagged relevant nodes. Changes
+    nothing. 404 unknown run or fork, 409 if the run finished or `at` is not on the path."""
+    return await _fork(manager.fork_preview, run_id, fork_id, at)
+
+
+@router.post("/{run_id}/forks/{fork_id}/confirm")
+async def confirm_fork(run_id: str, fork_id: str, body: ForkConfirmRequest,
+                       manager: Manager) -> ForkRequest:
+    """Fork: snapshot the tree, park every live node off the root-to-F path (and F's
+    descendants; not as dead ends, restorable), queue new hypotheses at F, and leave the run
+    paused (resume to go on). `at` moves F along the path; `keep_live` keeps flagged nodes live.
+    409 if the fork is no longer waiting, the run finished, or `at` is not on the path."""
+    return await _fork(manager.confirm_fork, run_id, fork_id, body.at, body.keep_live)
+
+
+@router.post("/{run_id}/forks/{fork_id}/dismiss")
+async def dismiss_fork(run_id: str, fork_id: str, manager: Manager) -> ForkRequest:
+    """No fork: nothing is parked and the run carries on with the amended objectives."""
+    return await _fork(manager.dismiss_fork, run_id, fork_id)
+
+
+@router.post("/{run_id}/forks/{fork_id}/undo")
+async def undo_fork(run_id: str, fork_id: str, body: ForkUndoRequest,
+                    manager: Manager) -> ForkRequest:
+    """Put the tree back exactly as it was before the fork (statuses, keeps, decisions, dead
+    ends) and drop its queued hypotheses; the amended objectives stay. If nodes were created
+    since, they and their results are deleted, which needs `confirm_delete: true`: without it
+    the answer is 409 with "Undo fork: this deletes N new node(s)...". The run is left
+    paused."""
+    return await _fork(manager.undo_fork, run_id, fork_id, body.confirm_delete)
+
+
+async def _fork(call, run_id: str, fork_id: str, *args) -> ForkRequest:
+    try:
+        return await call(run_id, fork_id, *args)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail="run or fork not found") from e
+    except (RunNotRunning, ForkClosed, UndoNeedsConfirm, IllegalAction) as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
 
 @router.post("/{run_id}/stop", status_code=202)

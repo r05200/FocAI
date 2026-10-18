@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, TypeAdapter
 
 from pruner.core.models import (
     Finding,
+    ForkRequest,
     Instruction,
     LogEntry,
     Node,
@@ -150,6 +151,20 @@ class SuggestionResolved(EventBase):
     suggestion: Suggestion
 
 
+class NodeRemoved(EventBase):
+    """A node no longer exists (undoing a fork deletes the nodes created after it)."""
+
+    type: Literal["node_removed"] = "node_removed"
+    node_id: str
+
+
+class ForkUpdated(EventBase):
+    """A fork request was made, confirmed, dismissed, replaced or undone (the whole request)."""
+
+    type: Literal["fork_updated"] = "fork_updated"
+    fork: ForkRequest
+
+
 class RunCompleted(EventBase):
     type: Literal["run_completed"] = "run_completed"
     run: Run  # final totals and final_answer
@@ -177,6 +192,8 @@ Event = Annotated[
     | IdeaAdded
     | SuggestionsReady
     | SuggestionResolved
+    | NodeRemoved
+    | ForkUpdated
     | RunCompleted
     | RunFailed,
     Field(discriminator="type"),

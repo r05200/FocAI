@@ -109,7 +109,7 @@ class SynthesisPhase:
         run = state.run
         assert node.experiment is not None
         view = RunView(run=run, nodes=state.nodes, findings=state.findings,
-                       dead_ends=state.dead_ends, workspace=state.workspace)
+                       dead_ends=state.dead_ends, workspace=state.workspace, ideas=state.ideas)
         values = build_context(view, node, self.cfg)
         change = (state.workspace.diff(node.base_version, node.version)
                   if state.workspace and node.base_version and node.version else "(none)")
@@ -138,7 +138,7 @@ class SynthesisPhase:
             "question": values["question"], "instructions": values["instructions"],
             "objectives": values["objectives"], "ancestors": values["ancestors"],
             "findings": values["findings"], "budget": values["budget"],
-            "trend": values["trend"], "best": values["best"],
+            "trend": values["trend"], "best": values["best"], "run_vault": values["run_vault"],
             "other_branches": values["other_branches"],
             "hypothesis": (f"{hypothesis.statement}\nExpected: {hypothesis.expected_signal}"
                            if hypothesis else node.description),
@@ -198,9 +198,10 @@ class SynthesisPhase:
                                       node_ids=[node.id]))
         if s.verdict in ("supported", "refuted") and host.vault is not None:
             try:
-                await host.vault.ingest_learned(
+                learned = await host.vault.ingest_learned(
                     run.primary_person, title=s.finding,
                     summary=f"{s.verdict.capitalize()} in run {run.id}: {s.measured}",
                     source_text=f"{node.full_text()}\n{describe(node.experiment)}")
+                node.learned_ids.append(learned.item.id)  # undoing a fork can remove it
             except (LLMError, OSError) as e:  # the vault is a bonus; the run goes on
                 log.warning("could not file the finding of %s in the vault: %s", node.id, e)

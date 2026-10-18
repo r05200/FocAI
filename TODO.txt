@@ -194,3 +194,30 @@ it needs, and what milestone or session it came from.
     is offered among the choices after a step the wrong way (keep it to take it).
 [ ] Node.result now says how each value moved since the previous round, e.g.
     "Measured in 1.2s: ms=9 (+12% vs n2), mem.mb=3 (same)": the body text the panel shows.
+
+--- Forks, Conclude and end_reason (backend built; frontend still to do) ------------------------
+
+[ ] Forks (FORK_PLAN.md items 10-14). Contract:
+      - types.ts: ForkRequest gains status "requested" | "confirmed" | "dismissed" | "replaced" |
+        "undone", path / below: ForkStep[] {node_id, description, depth, score (0..1)}, park_ids,
+        kept_overridden, flagged_ids, web_search, suggestion_id, confirmed_at_node.
+        Run.awaiting adds "fork"; Run.fork_id. Suggestion.action adds "fork", Suggestion.fork_id.
+        Node.learned_ids, Node.branch_conclusion. New events: fork_updated {fork},
+        node_removed {node_id}.
+      - Routes: GET /runs/{id}/forks; GET .../forks/{fork_id}/preview?at=<node> (move F);
+        POST .../forks/{fork_id}/confirm {at?, keep_live: []}; POST .../dismiss;
+        POST .../undo {confirm_delete} (409 "Undo fork: this deletes N new node(s)..." until
+        confirm_delete is sent). Confirming the fork suggestion via the suggestions route also
+        works (no moved F / keep_live then).
+      - While Run.awaiting == "fork": show "waiting for fork decision"; keep/park/restore/conclude
+        and other suggestion confirms answer 409. After confirm the run is paused (resume = go on).
+[ ] Conclude: POST /runs/{id}/nodes/{node_id}/conclude is live (the route client.ts proposed):
+    returns the conclusion node (branch_conclusion = true, child of node_id); the nodes under
+    node_id are PARKED (not deleted; restorable, results kept) and node_id is closed. The run's
+    own end-of-run conclusion is a separate node (branch_conclusion = false).
+[ ] Run.end_reason ("stopped" | "limit" | "error" | null) and Run.error are now sent; nodeStatus.ts
+    can drop the hitLimit() guess. "limit" = the experiment budget ended the run; null = it simply
+    finished its work.
+[ ] PublicConfig in types.ts is missing fields the backend sends (similarity_threshold,
+    search_top_k, link_threshold, the research limits, experiment_cache, ...): only needed if the
+    UI shows them.

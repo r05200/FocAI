@@ -279,6 +279,15 @@ class VaultStore:
         order = np.argsort(-sims)[:k]
         return [(pool[j], float(sims[j])) for j in order if sims[j] >= threshold]
 
+    def delete_item(self, item_id: str) -> bool:
+        """Remove an item and its links (undoing a fork removes what deleted nodes learned)."""
+        item = self._items.pop(item_id, None)
+        if item is None:
+            return False
+        self._edges = [e for e in self._edges if item_id not in (e.source, e.target)]
+        self._save(item.person)
+        return True
+
     def record_retrieval(self, item_ids: Iterable[str]) -> None:
         """Count one retrieval for every id in `item_ids` (repeat an id to count it again): the
         notes an LLM was just shown, whether the agent's tool, a scorer or a research search

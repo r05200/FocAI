@@ -179,7 +179,7 @@ class HypothesisPhase:
             return []
         research = state.workspace is None
         view = RunView(run=run, nodes=state.nodes, findings=state.findings,
-                       dead_ends=state.dead_ends, workspace=state.workspace)
+                       dead_ends=state.dead_ends, workspace=state.workspace, ideas=state.ideas)
         values = build_context(view, parent, self.cfg)
         if research:
             del values["code"], values["command"]

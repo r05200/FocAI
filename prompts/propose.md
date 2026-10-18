@@ -36,6 +36,9 @@ Best result so far: {{best}}
 What other branches measured (compared with the baseline):
 {{other_branches}}
 
+Run vault (this run's own ideas and whole-branch findings so far). Scan it, but use it only where it bears on this step; ignore it when it does not help:
+{{run_vault}}
+
 Findings so far:
 {{findings}}
 

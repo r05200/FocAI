@@ -55,7 +55,7 @@ HumanAction = Literal["keep", "park", "restore"]
 # What confirming a suggestion does: run = run this waiting node next; expand = new hypotheses
 # from this node; restore = bring this parked node back; remeasure = an experiment that adds the
 # measurement the instruction needs.
-SuggestionAction = Literal["run", "expand", "restore", "remeasure"]
+SuggestionAction = Literal["run", "expand", "restore", "remeasure", "fork"]
 
 
 def new_id(prefix: str) -> str:
@@ -316,6 +316,12 @@ class Node(BaseModel):
     # way) and try something else from there. No experiment runs for it: the target's result is
     # already known. The UI can show it as "Revert to <id>".
     revert_to: str | None = None
+    # Items this node filed in the run owner's vault ("learned"), so undoing a fork that
+    # created the node can remove them too.
+    learned_ids: list[str] = Field(default_factory=list)
+    # A conclusion a person asked for at one node (POST .../nodes/{id}/conclude), as opposed to
+    # the run's own conclusion written when the run ends.
+    branch_conclusion: bool = False
     tool_calls: dict[str, int] = Field(default_factory=dict)  # calls used, per phase
     created_at: float = Field(default_factory=time.time)
 
@@ -394,6 +400,11 @@ class Run(BaseModel):
     vault_people: list[str] = Field(default_factory=list)  # whose vaults the scorers search
     mode: RunMode = "pruned"
     status: RunStatus = "running"
+    # Why a finished run ended (None while running, and for a run that simply finished its
+    # work): stopped by the user, a cap reached (the experiment budget), or a real failure
+    # (the message in `error`). status "failed" covers both stopped and error.
+    end_reason: Literal["stopped", "limit", "error"] | None = None
+    error: str | None = None
     # True while the run is paused: its agent takes no further step until it is resumed. Not a
     # status (the run is still "running"); cleared when the run ends or is stopped.
     paused: bool = False
@@ -403,7 +414,10 @@ class Run(BaseModel):
     command: RunCommand | None = None
     # The run waits for a person: to answer the command question, or (manual mode) to choose
     # which proposed hypothesis to pursue next.
-    awaiting: Literal["command", "choice"] | None = None
+    # "fork": amended objectives led to a fork suggestion; nothing new runs until a person
+    # confirms or dismisses it (fork_id names it).
+    awaiting: Literal["command", "choice", "fork"] | None = None
+    fork_id: str | None = None
     # Manual mode: before each experiment the run waits for a person to choose which of the
     # proposed hypotheses to pursue (POST /runs/{id}/manual). Off: it chooses by itself.
     manual: bool = False
@@ -440,18 +454,53 @@ class PauseResult(BaseModel):
     paused: bool
 
 
+class ForkStep(BaseModel):
+    """One node on a fork card: where it is and how relevant it is to the amended objectives."""
+
+    node_id: str
+    description: str
+    depth: int
+    score: float | None = None  # the steering re-rate's relevance, 0..1 (shown as 0..10)
+
+
+ForkStatus = Literal["requested", "confirmed", "dismissed", "replaced", "undone"]
+
+
 class ForkRequest(BaseModel):
-    """The amend agent found that every branch under this node scored low against the amended
-    objectives, so exploration should restart from here. Stored when it is requested; actually
-    forking the tree is not built yet."""
+    """After the objectives are amended, the amend agent suggests restarting from the node F
+    (node_id) that the new objectives still fit. Nothing changes until a person confirms; then
+    every node off the root-to-F path (and F's descendants) is parked, new hypotheses grow from
+    F, and "undo" restores the tree as it was. See FORK_PLAN.md. Older rows load with the
+    defaults."""
 
     id: str = Field(default_factory=lambda: new_id("f"))
     run_id: str
-    node_id: str  # restart exploration from this node
+    node_id: str  # F: restart exploration from this node
     reason: str
     objective_ids: list[str] = Field(default_factory=list)  # the objectives it was judged against
-    status: Literal["requested"] = "requested"
+    status: ForkStatus = "requested"
+    path: list[ForkStep] = Field(default_factory=list)  # root .. F, with scores
+    below: list[ForkStep] = Field(default_factory=list)  # deeper choices for F (the slider)
+    park_ids: list[str] = Field(default_factory=list)  # parked on confirm
+    kept_overridden: int = 0  # how many of them a person had kept (the keep is cleared)
+    flagged_ids: list[str] = Field(default_factory=list)  # off-path but relevant: "park anyway"
+    web_search: bool = False  # the new hypotheses can search the web (a provider is set up)
+    suggestion_id: str | None = None
+    confirmed_at_node: str | None = None  # where it was confirmed (a person may move F)
     created_at: float = Field(default_factory=time.time)
+
+
+class ForkConfirmRequest(BaseModel):
+    """Body of POST /runs/{id}/forks/{fork_id}/confirm."""
+
+    at: str | None = None  # another node on the path (or below F) to fork at instead of F
+    keep_live: list[str] = Field(default_factory=list)  # flagged nodes NOT to park
+
+
+class ForkUndoRequest(BaseModel):
+    """Body of POST /runs/{id}/forks/{fork_id}/undo."""
+
+    confirm_delete: bool = False  # needed when nodes were created after the fork
 
 
 class Question(BaseModel):
@@ -517,6 +566,7 @@ class Suggestion(BaseModel):
     family: str | None = None
     score: float = Field(default=0.0, ge=0, le=1)  # 0.6 x directive score + 0.4 x priority
     source: Literal["steer", "fork"] = "steer"
+    fork_id: str | None = None  # action "fork": the ForkRequest it confirms or dismisses
     instruction_id: str | None = None  # the instruction (or toggled chip) that led to it
     # replaced = a later re-rate offered a new set before this one was answered
     status: Literal["open", "confirmed", "dismissed", "replaced"] = "open"

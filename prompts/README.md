@@ -20,3 +20,4 @@ so they can be tuned without touching logic. Planned (added as each step is buil
 - `propose_research.md` (done): the hypothesis phase of a run without files: guesses at what the user wants to see, each with search queries
 - `synthesize_research.md` (done): judge a research experiment: are the resources found relevant to the objectives
 - `vault_ingest_link.md` (done): a paper link -> title and the abstract (or "No summary found.") parsed from the fetched page
+- `fork_brief.md` (done): the brief for the new hypotheses after a confirmed fork (the amended objectives and what was parked)

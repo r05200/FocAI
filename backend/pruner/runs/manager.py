@@ -7,8 +7,9 @@ agent as an asyncio task. The task:
   3. ends the run: run_completed with the final answer, or run_failed on an error.
 
 instruct() handles a later prompt (InstructionRequest): it records the instruction, then in the
-background amends the objectives and, if any objective was added, runs the amend-objectives agent
-over the tree (re-rating nodes and requesting forks where every branch is low).
+background amends the objectives; the tree is then re-rated (scores only) and, if any objective
+was added, the amend agent suggests a fork (orchestrator/fork.py, FORK_PLAN.md): a card a person
+confirms or dismisses, during which the run starts nothing new (Run.awaiting = "fork").
 
 Every step is appended to the run's event log (RunStore). The tree is written to disk only at
 level boundaries: when a level is created and when it is completed (_boundary), so a page reload
@@ -54,8 +55,10 @@ rewind). Restoring files a "correction" item in the person's vault in the backgr
 
 Steering: each instruction is a chip that can be turned off (toggle_instruction). After an
 instruction (once the objectives are amended) or a toggle, an orchestrator run re-rates its tree in
-one batched call and offers 2-3 suggestions (Orchestrator.steer, orchestrator/steering.py); the
-amend agent's fork requests become suggestions too. resolve_suggestion confirms or dismisses one.
+one batched call (scores only: it never parks or restores) and offers 2-3 suggestions
+(Orchestrator.steer, orchestrator/steering.py). resolve_suggestion confirms or dismisses one,
+including the fork card (action "fork"); confirm_fork / dismiss_fork / undo_fork do the same with
+the card's choices.
 Changes made outside the agent's step are copied onto the level-boundary tree (_mirror), so an
 aborted step's rewind, or a reload, keeps them.
 
@@ -92,6 +95,7 @@ from pruner.core.events import (
     Activity,
     EventBase,
     FindingAdded,
+    ForkUpdated,
     IdeaAdded,
     InstructionAdded,
     NodeCreated,
@@ -113,6 +117,7 @@ from pruner.core.models import (
     Caps,
     DeadEnd,
     Finding,
+    ForkRequest,
     HumanAction,
     Instruction,
     InstructionRequest,
@@ -129,7 +134,7 @@ from pruner.core.models import (
     TokenUsage,
     ToolCallRecord,
 )
-from pruner.orchestrator import human
+from pruner.orchestrator import fork, human
 from pruner.orchestrator.actions import room_under, why_blocked
 from pruner.orchestrator.queue import blocked
 from pruner.orchestrator.steering import Job, job_for
@@ -236,6 +241,16 @@ class LiveRun:
     # Set whenever something a manual-mode choice depends on changes (a keep, a park, a
     # suggestion, manual mode switched, an amendment): the waiting loop looks again.
     choice_changed: asyncio.Event = field(default_factory=asyncio.Event)
+    # Forks (orchestrator/fork.py): the run's fork requests; set when a fork waiting for a
+    # decision is confirmed or dismissed; running nodes a confirmed fork parks once they finish.
+    forks: list[ForkRequest] = field(default_factory=list)
+    fork_decided: asyncio.Event = field(default_factory=asyncio.Event)
+    # running nodes to park once their experiment finishes (a fork, or a concluded branch)
+    fork_parks: dict[str, str] = field(default_factory=dict)  # node id -> the park reason
+    ideas: list[RunIdea] = field(default_factory=list)  # the run vault, shown to the agent
+    # what the activity feed says when a step is aborted (an instruction, or undoing a fork)
+    abort_note: str = ("A new instruction arrived: the current step was aborted and will start "
+                       "again.")
     level: int = 0  # depth of the level in progress
     level_start: RunSnapshot | None = None  # the tree when that level was created
     step: asyncio.Task | None = None  # the agent's step in flight, which an instruction aborts
@@ -340,7 +355,9 @@ class RunManager:
                                                       self.store.last_seq(run_id), self.bus),
                         nodes=nodes, dead_ends=list(snap.dead_ends),
                         questions=list(snap.questions), findings=list(snap.findings),
-                        suggestions=list(snap.suggestions), level_start=start, level=max((n.depth for n in nodes), default=0),
+                        suggestions=list(snap.suggestions), forks=self.store.forks(run_id),
+                        ideas=list((self.store.run_vault(run_id) or RunVault(run_id=run_id)).ideas),
+                        level_start=start, level=max((n.depth for n in nodes), default=0),
                         workspace=Workspace.load(run_id, self.cfg) if snap.run.workspace else None)
         if not snap.run.paused:
             state.gate.set()
@@ -370,8 +387,8 @@ class RunManager:
         for node in state.nodes:
             for name in Node.model_fields:
                 setattr(node, name, copy.deepcopy(getattr(origin[node.id], name)))
-        state.emitter.emit(Activity, message="A new instruction arrived: the current step was "
-                                             "aborted and will start again.")
+        state.emitter.emit(Activity, message=state.abort_note)
+        state.abort_note = LiveRun.abort_note
         for node in state.nodes:
             if node.depth >= state.level and node.status == "running":
                 state.emitter.emit(NodeUpdated, node=node, change="running")
@@ -392,6 +409,16 @@ class RunManager:
         for name in names:
             setattr(origin, name, copy.deepcopy(getattr(node, name)))
         self.store.save_level_start(state.level_start)
+
+    def _add_outside_step(self, state: LiveRun, node: Node) -> None:
+        """A node created outside the agent's step (a person's conclusion): also put it in the
+        level-boundary tree, so a rewind or a reload keeps it."""
+        state.nodes.append(node)
+        if state.level_start is not None:
+            state.level_start.nodes.append(node.model_copy(deep=True))
+            self.store.save_level_start(state.level_start)
+        state.emitter.emit(NodeCreated, node=node)
+        self._save(state)
 
     def _settle_files(self, state: LiveRun) -> None:
         """When a run with files ends early (stop or error), leave the best supported version
@@ -416,6 +443,7 @@ class RunManager:
         self._drop_choice(state)
         self._settle_files(state)
         state.run.status = "failed"
+        state.run.end_reason, state.run.error = "error", error
         state.run.paused = False
         state.emitter.emit(RunFailed, error=error)
         self.store.save_snapshot(state.snapshot())
@@ -633,6 +661,7 @@ class RunManager:
     def _add_idea(self, state: LiveRun, idea: RunIdea) -> None:
         vault = self.store.run_vault(state.run.id) or RunVault(run_id=state.run.id)
         vault.ideas.append(idea)
+        state.ideas.append(idea)
         self.store.save_run_vault(vault)
         state.emitter.emit(IdeaAdded, idea=idea)
 
@@ -658,6 +687,7 @@ class RunManager:
         node = next((n for n in state.nodes if n.id == node_id), None)
         if node is None:
             raise KeyError(node_id)
+        self._refuse_while_forking(state)
         if node.status == "running":
             human.check(node, action)
             node.pending_action = action
@@ -691,7 +721,13 @@ class RunManager:
         self._file_correction(state, node)
 
     def _apply_pending(self, state: LiveRun) -> None:
-        """Apply the actions people took on nodes that were running then."""
+        """Apply the actions people took on nodes that were running then, and park the nodes a
+        confirmed fork could not park while their experiment ran."""
+        for node in state.nodes:
+            if node.id in state.fork_parks and node.status != "running":
+                fork.park_for_fork(node, "", reason=state.fork_parks.pop(node.id))
+                self._mirror(state, node)
+                state.emitter.emit(NodeUpdated, node=node, change="parked")
         for node in state.nodes:
             if node.pending_action is None or node.status == "running":
                 continue
@@ -747,7 +783,15 @@ class RunManager:
             raise KeyError(suggestion_id)
         if s.status != "open":
             raise SuggestionClosed(f"suggestion {suggestion_id} is already {s.status}")
+        if s.action == "fork" and s.fork_id is not None:  # the fork card's confirm / dismiss
+            if confirm:
+                fork.confirm(self, state, s.fork_id, None, ())
+            else:
+                fork.dismiss(self, state, s.fork_id)
+            state.choice_changed.set()
+            return s
         if confirm:
+            self._refuse_while_forking(state)
             node = next((n for n in state.nodes if n.id == s.node_id), None)
             if node is None:
                 raise human.IllegalAction(f"{s.node_id} is no longer in the tree")
@@ -919,13 +963,15 @@ class RunManager:
             async with state.amend_lock:
                 with self._scopes(run.id):
                     await self._checkpoint(state)
-                    forks = []
+                    amended = False
                     if instruction is not None:
-                        forks = await self._amend_objectives(state, instruction)
+                        amended = await self._amend_objectives(state, instruction)
                     if self.orchestrator is not None:
                         await self.orchestrator.steer(
-                            self, state, change=change, forks=forks,
+                            self, state, change=change,
                             instruction_id=instruction.id if instruction else instruction_id)
+                        if amended and self.amender is not None:
+                            self._propose_fork(state)
         except (LLMCancelled, asyncio.CancelledError):
             log.info("amendment for run %s was stopped", run.id)
         except (LLMError, ValueError, OSError) as e:  # a failed amendment does not end the run
@@ -942,27 +988,118 @@ class RunManager:
                 state.amends_idle.set()
             state.choice_changed.set()  # a re-rate may have parked or brought back candidates
 
-    async def _amend_objectives(self, state: LiveRun, instruction: Instruction) -> list:
-        """New objectives from the instruction; if any, the amend agent re-rates the tree and
-        may request forks (returned, so steering can offer them as suggestions)."""
+    async def _amend_objectives(self, state: LiveRun, instruction: Instruction) -> bool:
+        """Append the new objectives the instruction adds. True if there were any."""
         run, emitter = state.run, state.emitter
         new = await self.objectives.amend(run.objectives, instruction, question=run.question,
                                           directives=run.directives)
         if not new:
             emitter.emit(Activity, message="The instruction added no new objectives.")
-            return []
+            return False
         run.objectives = [*run.objectives, *new]
         emitter.emit(ObjectivesUpdated, objectives=run.objectives)
-        if self.amender is None or not state.nodes:
-            return []
-        result = await self.amender.run(run, state.nodes, lambda: self._checkpoint(state))
-        by_id = {n.id: n for n in state.nodes}
-        for s in result.rated:
-            emitter.emit(NodeUpdated, node=by_id[s.node_id], change="scored")
-        for fork in result.forks:
-            emitter.emit(Activity, node_id=fork.node_id,
-                         message=f"Backtracking: fork requested here. {fork.reason}")
-        return result.forks
+        return True
+
+    async def conclude_node(self, run_id: str, node_id: str) -> Node:
+        """A person's Conclude at a node: everything under it is parked, nothing new grows from
+        it, and a conclusion written from the path to it becomes its child (the new node is
+        returned). The rest of the run carries on. KeyError if the run or node is unknown,
+        RunNotRunning if the run finished, IllegalAction if the node cannot conclude (the root,
+        a parked or failed node, a conclusion, a node already concluded, or a fork waiting)."""
+        state = self._running(run_id)
+        node = next((n for n in state.nodes if n.id == node_id), None)
+        if node is None:
+            raise KeyError(node_id)
+        self._refuse_while_forking(state)
+        if self.orchestrator is None:
+            raise human.IllegalAction("this run has no orchestrator to conclude with")
+        if node.parent_id is None:
+            raise human.IllegalAction("the root cannot conclude: conclude at a branch")
+        if node.type == "conclusion" or node.status in ("parked", "failed"):
+            what = "a conclusion" if node.type == "conclusion" else node.status
+            raise human.IllegalAction(f"{node.id} is {what} and cannot conclude")
+        if any(c.parent_id == node.id and c.branch_conclusion for c in state.nodes):
+            raise human.IllegalAction(f"{node.id} is already concluded")
+        with self._scopes(run_id):
+            conclusion = await self.orchestrator.conclude_branch(self, state, node)
+        state.choice_changed.set()
+        self._save(state)
+        return conclusion
+
+    # ---- forks (orchestrator/fork.py, FORK_PLAN.md)
+
+    def _propose_fork(self, state: LiveRun) -> None:
+        """After amended objectives were re-rated: suggest where to restart, as a card a person
+        confirms or dismisses. The run holds new work until then. A fork still open is replaced."""
+        assert self.amender is not None
+        run = state.run
+        replaced = fork.replace_open(self, state)
+        request = self.amender.propose_fork(run, state.nodes)
+        if request is None:
+            if replaced:
+                run.awaiting, run.fork_id = None, None
+                state.emitter.emit(RunUpdated, run=run)
+                state.fork_decided.set()
+            state.emitter.emit(Activity, message="No fork needed: a fork would park nothing.")
+            self.store.save_forks(run.id, state.forks)
+            return
+        suggestion = Suggestion(run_id=run.id, node_id=request.node_id, action="fork",
+                                reason=request.reason, source="fork", fork_id=request.id,
+                                score=min(1.0, max(0.0, next(
+                                    (s.score for s in request.path[-1:] if s.score), 0.0))))
+        request.suggestion_id = suggestion.id
+        state.forks.append(request)
+        state.suggestions.append(suggestion)
+        state.emitter.emit(SuggestionsReady, suggestions=[suggestion], replaced=[])
+        run.awaiting, run.fork_id = "fork", request.id
+        state.fork_decided.clear()
+        state.emitter.emit(ForkUpdated, fork=request)
+        state.emitter.emit(RunUpdated, run=run)
+        state.emitter.emit(Activity, node_id=request.node_id, message=(
+            f"Fork suggested at {request.node_id}: {request.reason} It would park "
+            f"{len(request.park_ids)} node(s). Nothing new runs until you confirm or dismiss it."))
+        self.store.save_forks(run.id, state.forks)
+        self._save(state)
+
+    @staticmethod
+    def _refuse_while_forking(state: LiveRun) -> None:
+        if state.run.awaiting == "fork":
+            raise human.IllegalAction("a fork is waiting for your decision: confirm or dismiss "
+                                      "it first")
+
+    async def _hold_for_fork(self, state: LiveRun) -> None:
+        """Wait while a fork waits for a person's decision (no new experiment or proposal)."""
+        while state.run.awaiting == "fork":
+            state.fork_decided.clear()
+            await state.fork_decided.wait()
+
+    async def fork_preview(self, run_id: str, fork_id: str, at: str | None) -> ForkRequest:
+        """The fork card for F moved to `at` (no change is made)."""
+        return fork.preview(self._running(run_id), fork_id, at, self.cfg)
+
+    async def confirm_fork(self, run_id: str, fork_id: str, at: str | None = None,
+                           keep_live: list[str] | None = None) -> ForkRequest:
+        """Park everything off the path to F (or `at`), queue new hypotheses at it, leave the
+        run paused. KeyError, RunNotRunning, ForkClosed, IllegalAction (a bad `at`)."""
+        state = self._running(run_id)
+        out = fork.confirm(self, state, fork_id, at, keep_live or [])
+        state.choice_changed.set()
+        return out
+
+    async def dismiss_fork(self, run_id: str, fork_id: str) -> ForkRequest:
+        state = self._running(run_id)
+        out = fork.dismiss(self, state, fork_id)
+        state.choice_changed.set()
+        return out
+
+    async def undo_fork(self, run_id: str, fork_id: str,
+                        confirm_delete: bool = False) -> ForkRequest:
+        """Restore the tree saved just before the fork. UndoNeedsConfirm if nodes created since
+        would be deleted and confirm_delete is not set."""
+        state = self._running(run_id)
+        out = fork.undo(self, state, fork_id, confirm_delete)
+        state.choice_changed.set()
+        return out
 
     async def _step(self, state: LiveRun, make: Callable[[], Awaitable[T]]) -> T:
         """Run one step of the agent (`make()` starts it). An instruction that arrives meanwhile

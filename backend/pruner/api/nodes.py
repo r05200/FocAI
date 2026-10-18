@@ -52,6 +52,22 @@ async def restore_node(run_id: str, node_id: str, manager: Manager) -> Node:
     return await _act(manager, run_id, node_id, "restore")
 
 
+@router.post("/conclude")
+async def conclude_node(run_id: str, node_id: str, manager: Manager) -> Node:
+    """Conclude at this node: everything under it is parked (restorable, results kept; a running
+    one once its experiment finishes), nothing new grows from it, and a conclusion written from
+    the path root -> node (one LLM call) is returned: a new node of type "conclusion", a child of
+    node_id. The rest of the run carries on. 404 unknown run or node; 409 if the run finished,
+    a fork waits for a decision, or the node cannot conclude (the root, a parked or failed node,
+    a conclusion, one already concluded)."""
+    try:
+        return await manager.conclude_node(run_id, node_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail="run or node not found") from e
+    except (RunNotRunning, IllegalAction) as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+
+
 async def _act(manager: RunManager, run_id: str, node_id: str, action: HumanAction) -> Node:
     try:
         return await manager.node_action(run_id, node_id, action)

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from pruner.core import prompts
 from pruner.core.config import Config
-from pruner.core.models import DeadEnd, Finding, Node, Run
+from pruner.core.models import DeadEnd, Finding, Node, Run, RunIdea
 from pruner.workspace.paths import is_secret
 from pruner.workspace.workspace import Workspace
 
@@ -28,6 +28,7 @@ class RunView:
     findings: Sequence[Finding]
     dead_ends: Sequence[DeadEnd]
     workspace: Workspace | None
+    ideas: Sequence[RunIdea] = ()  # the run vault: this run's ideas and whole-branch findings
 
 
 METRICS_SHOWN = 6
@@ -117,6 +118,23 @@ def other_branches_text(nodes: Sequence[Node], node: Node,
                                 else [])) or "(no other branch has a result yet)"
 
 
+RUN_VAULT_SHOWN = 10
+
+
+def run_vault_text(ideas: Sequence[RunIdea], limit: int = RUN_VAULT_SHOWN) -> str:
+    """The run vault for a prompt: whole-branch findings first (the agent was fairly sure), then
+    the latest ideas. The prompt says to use it only where it helps."""
+    branch = [i for i in ideas if i.kind == "branch_finding"]
+    rest = [i for i in ideas if i.kind != "branch_finding"]
+    shown = (branch[-limit:] + rest[-max(0, limit - len(branch[-limit:])):])[:limit]
+    lines = []
+    for i in shown:
+        sure = f", {i.confidence:.0%} sure" if i.confidence is not None else ""
+        kind = "branch finding" if i.kind == "branch_finding" else "idea"
+        lines.append(f"- [{kind}{sure}] {i.title}: {i.summary} ({i.branch})")
+    return "\n".join(lines) or "(the run vault is empty)"
+
+
 def node_line(node: Node) -> str:
     """One line about a node, for ancestor and sibling lists."""
     family = f"[{node.family}] " if node.family else ""
@@ -182,6 +200,7 @@ def build_context(view: RunView, node: Node, cfg: Config) -> dict[str, str]:
         or "(none yet)",
         "siblings": "\n".join(node_line(n) for n in children) or "(none yet)",
         "dead_ends": prompts.render_dead_ends(view.dead_ends),
+        "run_vault": run_vault_text(view.ideas),
         "trend": trend_text(view.nodes, node),
         "best": best_text(view.nodes),
         "other_branches": other_branches_text(view.nodes, node),
