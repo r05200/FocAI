@@ -5,7 +5,7 @@ It scores nothing itself. The steering re-rate that runs right after an amendmen
 (Orchestrator.steer, one batched call) has just written every node's relevance to the amended
 objectives (Node.directive_score), and the agent reads those, so the card and the queue show the
 same numbers. From them it picks the fork point F (orchestrator/fork.py choose_fork_point):
-  walk down from the root through nodes scoring at least cfg.fork_relevant_at (8/10); F is the
+  walk down from the root through nodes scoring at least cfg.fork_relevant_at (7/10); F is the
   deepest node reached, or the lowest common ancestor of several qualifying branches, or the
   root (the baseline) when nothing qualifies.
 The result is a ForkRequest a person confirms or dismisses (never applied by itself); it is None
@@ -69,7 +69,7 @@ class AmendObjectivesAgent:
                                                                "items": {"type": "string"}}},
                   "required": ["node_ids"]}, rate),
             Tool("suggest_fork", "Where exploration should restart for the amended objectives: "
-                                 "the deepest node still scoring 8/10 or more on its path (a "
+                                 "the deepest node still scoring 7/10 or more on its path (a "
                                  "person confirms it).",
                  {"type": "object", "properties": {}}, suggest_fork),
         )

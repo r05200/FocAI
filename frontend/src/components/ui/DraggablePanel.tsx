@@ -78,7 +78,7 @@ export default function DraggablePanel({ label, onClose, children, 'aria-label':
           </button>
         </div>
       </div>
-      <div className="overflow-auto px-4 pb-3.5 [overflow-wrap:anywhere]">{children}</div>
+      <div className="overflow-auto px-4 pb-3.5 wrap-anywhere">{children}</div>
     </aside>
   )
 }

@@ -94,7 +94,7 @@ def steer_block(node: Node) -> str:
         if node.synthesis is not None:
             lines.append(f"What it found: {one_line(node.synthesis.measured)[:300]}")
     else:
-        lines.append("Not run yet.")
+        lines.append("Running now." if node.status == "running" else "Not run yet.")
     return "\n".join(lines)
 
 
@@ -243,23 +243,33 @@ class PreScorer:
         out: list[SteerScored] = []
         for start in range(0, len(nodes), chunk):
             part = list(nodes[start:start + chunk])
-            prompt = prompts.render(
-                "steer_rate", question=question, change=change,
-                instructions=prompts.render_instructions(instructions, directives),
-                objectives=prompts.render_objectives(objectives), findings=findings,
-                measured=measured, nodes="\n\n".join(steer_block(n) for n in part))
-            gen = await self.llm.generate(SteerBatch, prompt, model=self.cfg.fast_model,
-                                          purpose="scorer")
-            judged = {r.node_id: r for r in gen.value.ratings}
-            share = TokenCount(input=gen.tokens.input // len(part),
-                               output=gen.tokens.output // len(part), calls=gen.tokens.calls)
-            for node in part:
-                r = judged.get(node.id)
-                if r is None:
-                    log.warning("steering re-rate gave no score for %s", node.id)
-                    continue
-                out.append(SteerScored(node.id, to_unit(r.relevant), one_line(r.reason),
-                                       r.metric_needed.strip(), share))
+            # A node the judge leaves out would count as 0 when a fork point is chosen, so the
+            # skipped ones are asked about again (once).
+            for attempt in range(2):
+                prompt = prompts.render(
+                    "steer_rate", question=question, change=change,
+                    instructions=prompts.render_instructions(instructions, directives),
+                    objectives=prompts.render_objectives(objectives), findings=findings,
+                    measured=measured, nodes="\n\n".join(steer_block(n) for n in part))
+                gen = await self.llm.generate(SteerBatch, prompt, model=self.cfg.fast_model,
+                                              purpose="scorer")
+                judged = {r.node_id: r for r in gen.value.ratings}
+                share = TokenCount(input=gen.tokens.input // len(part),
+                                   output=gen.tokens.output // len(part), calls=gen.tokens.calls)
+                skipped = []
+                for node in part:
+                    r = judged.get(node.id)
+                    if r is None:
+                        skipped.append(node)
+                        continue
+                    out.append(SteerScored(node.id, to_unit(r.relevant), one_line(r.reason),
+                                           r.metric_needed.strip(), share))
+                if not skipped:
+                    break
+                part = skipped
+                if attempt == 1:
+                    log.warning("steering re-rate gave no score for %s",
+                                ", ".join(n.id for n in skipped))
         return out
 
     # ---- shared pieces

@@ -5,6 +5,7 @@ import { ApiError, concludeNode, isOffline, nodeAction } from '../../api/client'
 import { isLocalRun } from '../../lib/localRun'
 import { metObjectives, runProgress } from '../../lib/runProgress'
 import { useNodeLogs } from '../../hooks/useNodeLogs'
+import { useAfter } from '../../hooks/useAfter'
 import { useForks } from '../../hooks/useForks'
 import { useRunTree } from '../../hooks/useRunTree'
 import { isTyping, useSpacePan } from '../../hooks/useSpacePan'
@@ -20,7 +21,7 @@ import TreeEdge, { type EdgeState, type TreeEdgeType } from './TreeEdge'
 import ConclusionPanel from './ConclusionPanel'
 import PatchPanel from './PatchPanel'
 import { choiceNodes, pendingCount } from '../../lib/runInbox'
-import RunCards from './RunCards'
+import RunCards, { InstructionList } from './RunCards'
 import NodeLogsPanel from './NodeLogsPanel'
 import NodePanel from './NodePanel'
 import ObjectivesChecklist from './ObjectivesChecklist'
@@ -95,7 +96,7 @@ function TreeNodeView({ data, selected }: NodeProps<FlowNode>) {
     // Faintness is on the wrapper: the pop-in animation owns the circle's own opacity.
     <div className={`flex w-36 flex-col items-center transition-opacity duration-500 ${faint ? 'opacity-45' : ''}`}>
       <div className="relative">
-        {ripple && <Ripple />}
+        {ripple && <Ripple afterMs={popDelay + popMs} />}
         {wasChoice && <ChoiceRing at={choiceAt} afterMs={ringAfterMs} ending={choice ? null : picked ? CHOSEN_DRAW_MS : 0} />}
         <Handle type="target" position={Position.Left} className="opacity-0!" isConnectable={false} />
         <div
@@ -127,8 +128,11 @@ function TreeNodeView({ data, selected }: NodeProps<FlowNode>) {
 
 // The blue ring that spreads out from a branch as a pulse reaches it (in step with the pulse on
 // its line: both run on the shared PULSE_MS clock).
-function Ripple() {
+// It waits until the node has finished popping in (`afterMs` from now).
+function Ripple({ afterMs }: { afterMs: number }) {
   const [phase] = useState(pulsePhase)
+  const ready = useAfter(afterMs)
+  if (!ready) return null
   return (
     <span
       aria-hidden="true"
@@ -260,6 +264,8 @@ interface Props {
   // The tab is on screen / the run is still going (keep polling for new nodes).
   active: boolean
   live: boolean
+  // The prompt bar is still moving: the pulses and ripples wait until it has landed.
+  hold?: boolean
   onOpenRunVault: () => void
   onDebugReload: () => void // DEBUG ONLY, see the reload button below
 }
@@ -272,7 +278,8 @@ export default function TreeCanvas(props: Omit<Props, 'onDebugReload'>) {
   return <TreeCanvasView key={reloads} {...props} onDebugReload={() => setReloads((n) => n + 1)} />
 }
 
-function TreeCanvasView({ runId, question, startedAt, active, live, onOpenRunVault, onDebugReload }: Props) {
+function TreeCanvasView({ runId, question, startedAt, active, live, hold = false, onOpenRunVault, onDebugReload }: Props) {
+  const pulses = live && !hold
   // The run's nodes from the backend: GET /runs/{id}, then its event stream while it's going (or
   // polling until the backend serves the stream). Without them the stand-in shows.
   // `live`, not `live && active`: the stream and the state built on it must outlive a tab switch.
@@ -408,7 +415,7 @@ function TreeCanvasView({ runId, question, startedAt, active, live, onOpenRunVau
           popMs: a ? popMs(a) : 0,
           chosen: chosen.has(n.id),
           faint: !isRoot && !choice && isCandidate(n, chosen) && n.status !== 'running',
-          ripple: live && !isRoot && !choice && isCandidate(n, chosen),
+          ripple: pulses && !isRoot && !choice && isCandidate(n, chosen),
           choice,
           choiceAt: line.at,
           // Unfolding, the node pops in once its line is drawn: the ring waits for that too.
@@ -416,7 +423,7 @@ function TreeCanvasView({ runId, question, startedAt, active, live, onOpenRunVau
         },
       }
     })
-  }, [treeNodes, appear, chosen, choices, live])
+  }, [treeNodes, appear, chosen, choices, pulses])
   // Controlled nodes need their change handler, or dragging a node has no effect.
   const [nodes, setNodes, applyNodeChanges] = useNodesState<FlowNode>(layoutNodes)
   // Nodes a person dragged keep their spot; every other node follows the layout as the tree grows
@@ -500,7 +507,7 @@ function TreeCanvasView({ runId, question, startedAt, active, live, onOpenRunVau
               state,
               appearDelay: a ? popDelay(a) : 0,
               drawDelay: a ? drawDelay(a) : null,
-              pulsing: live,
+              pulsing: pulses,
               choice,
               choiceAt: line.at,
               choiceMs: line.ms,
@@ -535,7 +542,7 @@ function TreeCanvasView({ runId, question, startedAt, active, live, onOpenRunVau
                 }))
             }),
         ),
-    [treeNodes, appear, chosen, choices, live],
+    [treeNodes, appear, chosen, choices, pulses],
   )
 
   // Popup for the clicked node, and its logs sidebar.
@@ -750,7 +757,6 @@ function TreeCanvasView({ runId, question, startedAt, active, live, onOpenRunVau
             <RunCards
               runId={runId}
               suggestions={snapshot.suggestions ?? []}
-              instructions={snapshot.run.instructions}
               nodes={treeNodes}
               canAct={canAct}
               live={live}
@@ -768,6 +774,13 @@ function TreeCanvasView({ runId, question, startedAt, active, live, onOpenRunVau
             <p className="px-1 text-xs text-muted">Nothing needs you right now.</p>
           )}
         </div>
+        {/* The steering instructions: the bottom quarter, scrolling on its own. */}
+        <section aria-label="Your instructions" className="flex h-1/4 shrink-0 flex-col border-t border-line">
+          <h2 className="shrink-0 px-5 pt-3 pb-2 text-xs font-semibold text-muted">Your instructions</h2>
+          <div className="min-h-0 flex-1 overflow-auto px-5 pb-4">
+            <InstructionList runId={runId} instructions={snapshot?.run.instructions ?? []} canAct={canAct} apply={apply} />
+          </div>
+        </section>
       </aside>
 
       {/* The run's objectives, bottom right; they move aside with the notifications panel. */}

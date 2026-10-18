@@ -16,7 +16,6 @@ const ACTION_LABEL: Record<Suggestion['action'], string> = {
 interface Props {
   runId: string
   suggestions: Suggestion[]
-  instructions: Instruction[]
   nodes: TreeNode[]
   // The run is going and no fork waits on a decision (the backend refuses node actions, choices and
   // suggestions until then: 409). `live`: just the run going (the fork cards need only that).
@@ -34,13 +33,11 @@ interface Props {
 
 const errorText = (err: unknown, fallback: string) => (err instanceof Error ? err.message : fallback)
 
-// The run's to-dos for a person, stacked in the notifications panel: the fork, the choices,
-// suggestions for where to continue, and the steering instructions (chips that can be turned off).
-// Each card only shows when it has something in it.
+// The run's to-dos for a person, stacked in the notifications panel: the fork, the choices, and
+// suggestions for where to continue. Each card only shows when it has something in it.
 export default function RunCards({
   runId,
   suggestions,
-  instructions,
   nodes,
   canAct,
   live,
@@ -53,8 +50,7 @@ export default function RunCards({
 }: Props) {
   const choices = choiceNodes(nodes)
   const offered = offeredSuggestions(suggestions)
-  const steering = instructions.filter((i) => i.kind === 'steer')
-  if (!pendingFork && !lastFork && choices.length === 0 && offered.length === 0 && steering.length === 0) {
+  if (!pendingFork && !lastFork && choices.length === 0 && offered.length === 0) {
     return <p className="px-1 text-xs text-muted">Nothing needs you right now.</p>
   }
   const title = (id: string) => nodes.find((n) => n.id === id)?.description ?? id
@@ -104,16 +100,31 @@ export default function RunCards({
         </Card>
       )}
 
-      {steering.length > 0 && (
-        <Card title="Your instructions">
-          <ul className="space-y-1.5">
-            {steering.map((i) => (
-              <SteeringChip key={i.id} runId={runId} instruction={i} canAct={canAct} apply={apply} />
-            ))}
-          </ul>
-        </Card>
-      )}
     </div>
+  )
+}
+
+// Every steering instruction, with its on/off switch: the notifications panel's own section at the
+// bottom (they stay in every prompt while on, so they stay here after a fork too).
+export function InstructionList({
+  runId,
+  instructions,
+  canAct,
+  apply,
+}: {
+  runId: string
+  instructions: Instruction[]
+  canAct: boolean
+  apply: Props['apply']
+}) {
+  const steering = instructions.filter((i) => i.kind === 'steer')
+  if (steering.length === 0) return <p className="text-xs text-muted">No instructions yet. Type one in the prompt bar.</p>
+  return (
+    <ul className="space-y-1.5">
+      {steering.map((i) => (
+        <SteeringChip key={i.id} runId={runId} instruction={i} canAct={canAct} apply={apply} />
+      ))}
+    </ul>
   )
 }
 
@@ -223,7 +234,7 @@ function SteeringChip({ runId, instruction: i, canAct, apply }: { runId: string;
         >
           <span className={`size-3 rounded-full bg-white transition-transform ${active ? 'translate-x-3' : ''}`} />
         </button>
-        <p className={`text-xs leading-relaxed [overflow-wrap:anywhere] ${active ? '' : 'text-muted line-through'}`}>{i.text}</p>
+        <p className={`text-xs leading-relaxed wrap-anywhere ${active ? '' : 'text-muted line-through'}`}>{i.text}</p>
       </div>
       {error && <p className="mt-0.5 text-xs text-kind-correction">{error}</p>}
     </li>

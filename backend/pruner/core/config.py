@@ -182,7 +182,7 @@ def get_config() -> Config:
         run_score_min=_env_float("RUN_SCORE_MIN", 6.0),
         post_score_min=_env_float("POST_SCORE_MIN", 4.0),
         rescore_park_below=_env_float("RESCORE_PARK_BELOW", 4.0),
-        fork_relevant_at=_env_float("FORK_RELEVANT_AT", 8.0),
+        fork_relevant_at=_env_float("FORK_RELEVANT_AT", 7.0),
         backtrack_below=_env_float("BACKTRACK_BELOW", 3.0),
         similarity_threshold=_env_float("SIMILARITY_THRESHOLD", 0.6),
         search_top_k=_env_int("SEARCH_TOP_K", 5),

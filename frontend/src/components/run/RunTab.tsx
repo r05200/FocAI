@@ -9,6 +9,14 @@ import TreeCanvas from './TreeCanvas'
 // The main menu's run list hugs its content (its widest question), up to this width; it keeps 32px
 // (p-8) from the window edge and from the prompt bar.
 const PANEL_MAX_W = 'clamp(210px, 19.5vw, 315px)'
+// Demo shortcut ("Default test" button): the folder and its program.md, and the prompt to run.
+const DEMO_PATHS = [
+  '/Users/jeremyniu/Hackathon/hack-the-valley-autoresearch/program.md',
+  '/Users/jeremyniu/Hackathon/hack-the-valley-autoresearch',
+]
+const DEMO_VAULT = 'jeremys-vault'
+const DEMO_PROMPT =
+  'Investigate whether changes to the model, optimizer, or batch size in train.py can reduce validation bits per byte (val_bpb, lower is better) within the fixed ten-second CPU training budget. Edit only train.py. Keep build_model(vocab_size, context_length) returning a CPU model with [batch, 256] logits, build_optimizer(model) returning its optimizer, and a module-level positive-integer BATCH_SIZE. Keep the model small. Context length (32 bytes), vocabulary (256), CPU threads (2), data, and the ten-second budget are fixed, and no new dependencies are allowed. Run each experiment with: rm -f runs/result.json && uv run experiment.py --output runs/result.json. The result is in runs/result.json.'
 const MENU_SETTLE_MS = 1200 // after going back, wait for the prompt bar to nearly arrive
 
 // Research tab. Main menu: a centred prompt bar under a heading (plus, while runs are going, a
@@ -64,6 +72,7 @@ export default function RunTab({ active }: { active: boolean }) {
   // run: the switch right of the bar, for that run (what this browser set, else what the run says).
   const draftManual = useRunStore((s) => s.draftManual)
   const setDraftManual = useRunStore((s) => s.setDraftManual)
+  const loadDemo = useRunStore((s) => s.loadDemo)
   const runManual = useRunStore((s) =>
     s.viewingId ? (s.manual[s.viewingId] ?? s.serverManual[s.viewingId] ?? false) : false,
   )
@@ -124,7 +133,7 @@ export default function RunTab({ active }: { active: boolean }) {
   // Heading and hint: out in 250ms when a run starts; back in only once the bar is nearly home.
   const fade = (visible: boolean) =>
     `pointer-events-none absolute inset-x-0 transition-opacity ${
-      visible ? 'opacity-100 duration-300 delay-[1200ms]' : 'opacity-0 duration-250'
+      visible ? 'opacity-100 duration-300 delay-1200' : 'opacity-0 duration-250'
     }`
 
   return (
@@ -147,6 +156,7 @@ export default function RunTab({ active }: { active: boolean }) {
             startedAt={(runs.find((r) => r.id === treeId)?.startedAt ?? 0) / 1000}
             active={active && !runVaultOpen}
             live={runs.some((r) => r.id === treeId && r.life !== 'ended')}
+            hold={barMoving}
             onOpenRunVault={openRunVault}
           />
         </div>
@@ -157,7 +167,7 @@ export default function RunTab({ active }: { active: boolean }) {
         // Out of reach while hidden (main menu) or covered by the run vault.
         inert={!started || runVaultOpen}
         className={`absolute top-5 left-6 z-20 flex items-center gap-1.5 text-sm text-muted transition-[opacity,color] hover:text-fg ${
-          started ? 'opacity-100 delay-[1200ms] duration-300' : 'pointer-events-none opacity-0 duration-150'
+          started ? 'opacity-100 delay-1200 duration-300' : 'pointer-events-none opacity-0 duration-150'
         }`}
       >
         <ArrowLeftIcon />
@@ -193,10 +203,20 @@ export default function RunTab({ active }: { active: boolean }) {
           inert={started}
           style={{ top: `calc(50% + ${barH / 2 + 45}px)` }}
           className={`absolute left-1/2 -translate-x-1/2 transition-opacity ${
-            started ? 'pointer-events-none opacity-0 duration-250' : 'pointer-events-auto opacity-100 duration-300 delay-[1200ms]'
+            started ? 'pointer-events-none opacity-0 duration-250' : 'pointer-events-auto opacity-100 duration-300 delay-1200'
           }`}
         >
-          <ManualSwitch on={draftManual} onToggle={() => setDraftManual(!draftManual)} />
+          <div className="flex items-center gap-4">
+            <ManualSwitch on={draftManual} onToggle={() => setDraftManual(!draftManual)} />
+            <button
+              type="button"
+              title="Demo only: fills in the prompt and attaches the autoresearch folder and its program.md, and picks Jeremy's vault"
+              onClick={() => loadDemo(DEMO_PROMPT, DEMO_PATHS, DEMO_VAULT)}
+              className="shrink-0 cursor-pointer rounded-full border border-line px-3 py-0.5 text-sm whitespace-nowrap text-muted hover:text-text"
+            >
+              Default test
+            </button>
+          </div>
         </div>
 
         {/* In a run: that run's manual mode, in the strip above the tree, SWITCH_GAP right of the bar
@@ -210,7 +230,7 @@ export default function RunTab({ active }: { active: boolean }) {
             left: `min(calc(50% + ${RUN_BAR_W} / 2 - ${BAR_PAD}px + ${SWITCH_GAP}px), calc(100% - ${SWITCH_W}px))`,
           }}
           className={`absolute flex items-center transition-opacity ${
-            started ? 'pointer-events-auto opacity-100 duration-300 delay-[1200ms]' : 'pointer-events-none opacity-0 duration-150'
+            started ? 'pointer-events-auto opacity-100 duration-300 delay-1200' : 'pointer-events-none opacity-0 duration-150'
           }`}
         >
           <ManualSwitch on={runManual} onToggle={toggleRunManual} disabled={barDisabled} error={manualError} />
@@ -251,7 +271,7 @@ export default function RunTab({ active }: { active: boolean }) {
         aria-hidden={!showList}
         inert={!showList}
         className={`absolute top-8 right-8 bottom-8 w-max min-w-40 overflow-auto rounded-2xl border border-line bg-elev py-2 transition-opacity ${
-          showList ? 'opacity-100 duration-300 delay-[1200ms]' : 'pointer-events-none opacity-0 duration-150'
+          showList ? 'opacity-100 duration-300 delay-1200' : 'pointer-events-none opacity-0 duration-150'
         }`}
         style={{ maxWidth: PANEL_MAX_W }}
       >

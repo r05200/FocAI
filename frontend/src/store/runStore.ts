@@ -46,6 +46,11 @@ interface RunState {
   // as set between runs.
   draftManual: boolean
   setDraftManual: (manual: boolean) => void
+  // Demo shortcut: paths to attach and the vault to pick (taken by StartRunForm), set with the prompt.
+  demoPaths: string[] | null
+  demoVault: string | null
+  loadDemo: (prompt: string, paths: string[], vault: string) => void
+  clearDemoPaths: () => void
   // Every run started in this session (newest last). Runs keep going while you're on the main
   // menu; the menu lists the ones still running.
   runs: RunEntry[]
@@ -157,6 +162,10 @@ export const useRunStore = create<RunState>()((set, get) => ({
   manualReply: null,
   draftManual: false,
   setDraftManual: (draftManual) => set({ draftManual }),
+  demoPaths: null,
+  demoVault: null,
+  loadDemo: (prompt, demoPaths, demoVault) => set({ prompt, demoPaths, demoVault }),
+  clearDemoPaths: () => set({ demoPaths: null, demoVault: null }),
   runs: [],
   viewingId: null,
   runVaultOpen: false,

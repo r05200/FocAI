@@ -42,7 +42,7 @@ export default function HistoryTab({ active }: { active: boolean }) {
                     setTab('run')
                   }}
                   className="w-full rounded-2xl border border-line bg-elev px-5 py-4 text-left transition-colors hover:bg-hover">
-                  <p className="leading-relaxed">{run.question}</p>
+                  <p title={run.question} className="line-clamp-2 leading-relaxed wrap-anywhere">{run.question}</p>
                   <p className="mt-2.5 flex flex-wrap items-center gap-x-2 text-xs text-muted">
                     <span className={`font-medium ${runEnd(run).style}`}>{runEnd(run).label}</span>
                     · <span>{MODE_LABEL[run.mode]}</span> ·{' '}

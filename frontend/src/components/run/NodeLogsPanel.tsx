@@ -58,8 +58,8 @@ export default function NodeLogsPanel({ open, node, entries, source, onClose }: 
           <li className="py-6 text-center text-sm text-muted">Nothing logged yet.</li>
         )}
         {entries.map((e) => (
-          <li key={e.id} className="relative border-l border-line pb-4 pl-4 last:pb-0">
-            <span className={`absolute top-1.5 -left-[4.5px] size-2 rounded-full ${(KIND[e.kind] ?? KIND.activity).dot}`} />
+          <li key={e.id} className="relative border-l border-line pb-4 pl-5 last:pb-0">
+            <span className={`absolute top-1.5 left-[-4.5px] size-2 rounded-full ${(KIND[e.kind] ?? KIND.activity).dot}`} />
             <p className="flex items-baseline justify-between gap-2 text-xs text-muted">
               <span>
                 {(KIND[e.kind] ?? KIND.activity).label}

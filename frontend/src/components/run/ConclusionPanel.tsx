@@ -55,11 +55,11 @@ export default function ConclusionPanel({ open, node, onClose }: Props) {
       <div className="flex-1 overflow-auto px-4 pb-4">
         {answer ? (
           <>
-            <p className="text-sm leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]">{summary}</p>
+            <p className="text-sm leading-relaxed whitespace-pre-wrap wrap-anywhere">{summary}</p>
             {nextSteps.length > 0 && (
               <>
                 <h3 className="mt-5 mb-2 text-sm font-semibold">Suggested next steps</h3>
-                <ul className="list-disc space-y-1.5 pl-5 text-sm leading-relaxed [overflow-wrap:anywhere]">
+                <ul className="list-disc space-y-1.5 pl-5 text-sm leading-relaxed wrap-anywhere">
                   {nextSteps.map((step, i) => (
                     <li key={i}>{step}</li>
                   ))}

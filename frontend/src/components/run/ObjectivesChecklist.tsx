@@ -48,7 +48,7 @@ export default function ObjectivesChecklist({ objectives, met, live }: Props) {
                 >
                   {checked && <CheckIcon width={11} height={11} strokeWidth={3} />}
                 </span>
-                <span className={`text-xs leading-relaxed [overflow-wrap:anywhere] ${checked ? 'text-muted line-through' : ''}`}>
+                <span className={`text-xs leading-relaxed wrap-anywhere ${checked ? 'text-muted line-through' : ''}`}>
                   {o.text}
                 </span>
               </li>

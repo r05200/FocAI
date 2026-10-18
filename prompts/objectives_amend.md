@@ -1,4 +1,4 @@
-The user sent a new instruction to a running investigation. Turn it into NEW point-form objectives (short, concrete, checkable, max 15 words, start with a verb), at most 2. Write only what the instruction itself asks for that the current objectives do not already cover; do not repeat them and do not invent anything it does not say. Return an empty list if it adds nothing; never write an objective just to have one.
+The user sent a new instruction to a running investigation. Turn it into NEW point-form objectives (short, concrete, checkable, max 15 words, starting with a verb), at most 2. Write only what the instruction asks that the current objectives don't cover; don't repeat them or invent anything. Return an empty list if it adds nothing.
 
 Return JSON "objectives": a list of strings.
 

@@ -4,8 +4,9 @@ When an instruction adds objectives, the steering re-rate scores every node for 
 (one batched call, Node.directive_score). From those scores:
 
   choose_fork_point()  F = walk down from the root through nodes scoring at least
-                       cfg.fork_relevant_at (8/10); F is the deepest node reached, or the lowest
-                       common ancestor when several branches qualify, or the root when none does.
+                       cfg.fork_relevant_at (7/10); F is the deepest node reached, or the lowest
+                       common ancestor when several branches qualify; when none does, the
+                       best-rated live node of the first layer (the root if it has none).
   park_set()           what a fork at F parks: every live node off the root-to-F path, plus F's
                        descendants. Never the baseline; nodes already parked or failed stay as
                        they are; a person may keep some flagged nodes live.
@@ -92,6 +93,13 @@ def choose_fork_point(nodes: Sequence[Node], cfg: Config) -> tuple[Node, str]:
             reached.append(node)  # the deepest relevant node of its chain
     at = f"{cfg.fork_relevant_at:g}/10"
     if not reached:
+        first = [c for c in kids.get(root.id, []) if _live(c)]
+        if first:  # nothing fits well: restart from the best-rated node of the first layer
+            best = max(first, key=lambda c: c.directive_score or 0.0)
+            score = to_ten(best.directive_score or 0.0)
+            return best, (f"No node scores {at} or more against the amended objectives, so the "
+                          f"fork restarts from {best.id}, the best-rated node of the first layer "
+                          f"({score:.1f}/10).")
         return root, (f"No node still scores {at} or more against the amended objectives, so "
                       f"the fork restarts from the root (the baseline).")
     paths = [[n.id for n in ancestors(nodes, r)] for r in reached]

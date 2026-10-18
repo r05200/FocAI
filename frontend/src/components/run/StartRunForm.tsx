@@ -55,6 +55,15 @@ export default function StartRunForm({ ended = false, textHidden = false }: { en
   // Files the run works on (absolute paths, sent as `paths` when the run starts).
   const [paths, setPaths] = useState<string[]>([])
   const [pathOpen, setPathOpen] = useState(false)
+  // The main menu's demo button hands over the paths to attach.
+  const demoPaths = useRunStore((s) => s.demoPaths)
+  useEffect(() => {
+    if (!demoPaths) return
+    setPaths(demoPaths)
+    const vault = useRunStore.getState().demoVault
+    if (vault) setVaultChoice(vault)
+    useRunStore.getState().clearDemoPaths()
+  }, [demoPaths])
   // Kept between runs: directives are standing instructions, likely reused.
   const [dirVaults, setDirVaults] = useState<string[]>([])
   const [dirIds, setDirIds] = useState<string[]>([])
@@ -391,7 +400,7 @@ export default function StartRunForm({ ended = false, textHidden = false }: { en
               <PlusIcon
                 width={18}
                 height={18}
-                className={`transition-transform duration-300 ease-zoom ${menuOpen ? 'rotate-[135deg]' : ''}`}
+                className={`transition-transform duration-300 ease-zoom ${menuOpen ? 'rotate-135' : ''}`}
               />
             </button>
             {menuOpen && (
@@ -597,7 +606,7 @@ function PreflightNotice({ preflight }: { preflight: Preflight }) {
         <p role="alert" className="text-kind-correction">
           <span className="font-medium">Execution commands unknown</span>
           {plan.why ? ` (${plan.why})` : ''}. Write the command that runs one experiment in your prompt, or the run
-          will stop to ask for it.
+          will not proceed.
         </p>
       )}
       {plan.missing_files.length > 0 && (

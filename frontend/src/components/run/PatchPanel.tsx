@@ -61,7 +61,7 @@ export default function PatchPanel({ open, runId, onClose }: Props) {
           {loaded && 'patch' in loaded && loaded.patch.trim() && (
             <pre className="font-mono text-[11px] leading-relaxed">
               {loaded.patch.split('\n').map((line, i) => (
-                <div key={i} className={`px-1 whitespace-pre-wrap [overflow-wrap:anywhere] ${lineStyle(line)}`}>
+                <div key={i} className={`px-1 whitespace-pre-wrap wrap-anywhere ${lineStyle(line)}`}>
                   {line || ' '}
                 </div>
               ))}

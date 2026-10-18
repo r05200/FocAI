@@ -2,8 +2,8 @@
 re-run.
 
 After the objectives are amended, one batched re-rate (PreScorer.rate_for_directive, the weak
-model, up to 30 nodes per call) scores every waiting, parked and finished node (not the baseline)
-for relevance to the run now. apply_rerate() writes each score and nothing else:
+model, up to 30 nodes per call) scores every waiting, running, parked and finished node (not
+the baseline) for relevance to the run now. apply_rerate() writes each score and nothing else:
 directive_score and directive_reason (the queue's directive term), plus needs_remeasure and
 missing_metrics when the instruction needs a result key the node's experiment did not measure.
 It never parks or restores a node: that comes only from a confirmed fork
@@ -45,7 +45,7 @@ class Job:
 
 def rerate_targets(nodes: Sequence[Node]) -> list[Node]:
     return [n for n in nodes if n.parent_id is not None and n.type != "conclusion"
-            and n.status in ("pending", "parked", "done")]
+            and n.status in ("pending", "parked", "running", "done")]
 
 
 def _key(text: str) -> str:

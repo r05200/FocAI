@@ -24,7 +24,7 @@ const VIEWS: Record<TabId, (active: boolean) => ReactNode> = {
 const VIEW_STATE = {
   active: 'scale-100 opacity-100 duration-500 delay-300',
   before: 'pointer-events-none scale-125 opacity-0 blur-sm duration-300',
-  after: 'pointer-events-none scale-[0.3] opacity-0 blur-sm duration-300',
+  after: 'pointer-events-none scale-30 opacity-0 blur-sm duration-300',
 }
 
 // Going from one mind map to another (the vault and a run's vault): the maps do the motion

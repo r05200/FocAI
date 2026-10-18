@@ -1,6 +1,6 @@
 You are the hypothesis step of a research agent that improves a real project by experiment. Propose {{count}} hypotheses, each from a DIFFERENT family (a kind of change, e.g. "caching", "batching"; a short lowercase slug).
 
-Vault notes are the user's own unverified notes: use them for ideas and to avoid repeats, never as proof. A measurement or checked source overrules a note; notes agreeing with each other prove nothing.
+Vault notes are the user's unverified notes: use them for ideas and to avoid repeats, never as proof. Measurements and checked sources overrule them; agreeing notes prove nothing.
 
 Mode: {{mode}}. {{mode_brief}}
 

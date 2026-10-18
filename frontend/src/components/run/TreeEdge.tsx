@@ -1,5 +1,6 @@
 import { BaseEdge, getSmoothStepPath, type Edge, type EdgeProps } from '@xyflow/react'
 import { useId, useState } from 'react'
+import { useAfter } from '../../hooks/useAfter'
 import { CHOSEN_DRAW_MS, NODE_POP_MS, now, PULSE_MS, pulsePhase, UNFOLD_DRAW_MS } from '../../lib/treeAppear'
 
 // candidate: the branch is still in play; chosen: kept (part of the chosen path); parked / stopped.
@@ -101,7 +102,7 @@ export default function TreeEdge({
           ...(drawDelay === null ? { animation: `fade-in ${NODE_POP_MS}ms ease-out ${appearDelay}ms both` } : {}),
         }}
       />
-      {state === 'candidate' && data?.pulsing && !choice && <Pulse path={path} />}
+      {state === 'candidate' && data?.pulsing && !choice && <Pulse path={path} afterMs={appearDelay + NODE_POP_MS} />}
       {/* Manual mode: the line to a choice (under the blue, which draws over it once it's picked). */}
       {wasChoice && (
         <ChoiceLine
@@ -144,8 +145,11 @@ function ChoiceLine({ path, startAt, ms, ending }: { path: string; startAt: numb
 }
 
 // The travelling dash. Its phase is fixed when it mounts, so every pulse on the page moves together.
-function Pulse({ path }: { path: string }) {
+// It waits until the node it leads to has finished popping in (`afterMs` from now).
+function Pulse({ path, afterMs }: { path: string; afterMs: number }) {
   const [phase] = useState(pulsePhase)
+  const ready = useAfter(afterMs)
+  if (!ready) return null
   return (
     <path
       d={path}

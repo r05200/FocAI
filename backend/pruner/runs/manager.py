@@ -1020,7 +1020,7 @@ class RunManager:
 
     async def instruct(self, run_id: str, req: InstructionRequest) -> Instruction:
         """Record a mid-run prompt now; amend the objectives and re-check the tree in the
-        background. While a step is running (and the run is not paused) the step is aborted
+        background. While a step is running (paused or not) the step is aborted
         first. KeyError if the run is unknown, RunNotRunning if it finished, ObjectivesNotReady
         if its objectives are not written yet."""
         state = self._running(run_id)
@@ -1034,7 +1034,7 @@ class RunManager:
         self._save(state)
         state.amends_open += 1
         state.amends_idle.clear()
-        if not state.run.paused and state.step is not None and not state.step.done():
+        if state.step is not None and not state.step.done():  # paused or not: it is rewound
             state.aborting = True
             state.step.cancel()
         self._spawn(state, self._amend(state, instruction,
