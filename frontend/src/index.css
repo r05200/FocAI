@@ -113,13 +113,76 @@
 }
 
 /* Run tab: the root node pops in once the prompt bar has finished moving to the top. */
-/* Reveals a path from its start (used on a mask stroke with pathLength="1", see GrowEdge). */
+/* Reveals a path from its start (a stroke with pathLength="1" and dasharray "1", see TreeEdge). */
 @keyframes edge-draw {
   from {
     stroke-dashoffset: 1;
   }
   to {
     stroke-dashoffset: 0;
+  }
+}
+
+/* Run tree pulses, one 5s cycle (lib/treeAppear PULSE_MS): a short dash travels down an undecided
+   branch's line in the first second (20%, PULSE_TRAVEL_MS), then the branch's circle ripples as it
+   arrives. Used on a stroke with pathLength="1" and dasharray "0.14 2" (see TreeEdge). */
+@keyframes edge-pulse {
+  0% {
+    stroke-dashoffset: 0.14;
+    opacity: 1;
+  }
+  20% {
+    stroke-dashoffset: -1;
+    opacity: 1;
+  }
+  20.01%,
+  100% {
+    stroke-dashoffset: -1;
+    opacity: 0;
+  }
+}
+
+@keyframes node-ripple {
+  0%,
+  19.99% {
+    transform: scale(1);
+    opacity: 0;
+  }
+  20% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  55%,
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+/* The line that shoots up out of a vault card's top and off the screen (MindMap3D card signal).
+   --rise: px from the card's top to past the top of the map. */
+@keyframes beam-shoot {
+  0% {
+    transform: translateY(0) scaleY(0);
+    opacity: 1;
+  }
+  25% {
+    transform: translateY(0) scaleY(1);
+  }
+  100% {
+    transform: translateY(calc(var(--rise) * -1)) scaleY(1);
+    opacity: 1;
+  }
+}
+
+/* Manual mode's waiting ring, once it has traced round (TreeCanvas AwaitingRing). */
+@keyframes ring-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
   }
 }
 

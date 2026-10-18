@@ -5,6 +5,7 @@ import { personColor } from '../../lib/colors'
 import { formatDate } from '../../lib/format'
 import { CheckIcon } from '../ui/Icons'
 import Modal from '../ui/Modal'
+import { vaultName } from '../../lib/vaultName'
 
 interface Props {
   vaults: string[]
@@ -61,12 +62,12 @@ export default function DirectivesPicker({ vaults: initialVaults, selected: init
               type="button"
               aria-pressed={on}
               onClick={() => toggleVault(p)}
-              className={`inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-sm capitalize transition-colors ${
+              className={`inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-sm transition-colors ${
                 on ? 'border-fg bg-hover text-fg' : 'border-line text-muted hover:bg-hover hover:text-fg'
               }`}
             >
               <span className="size-2 rounded-full" style={{ background: personColor(people, p) }} />
-              {p}
+              {vaultName(p)}
             </button>
           )
         })}
@@ -115,7 +116,7 @@ export default function DirectivesPicker({ vaults: initialVaults, selected: init
                       <span className="block text-sm leading-relaxed">{d.text}</span>
                       <span className="mt-1 flex items-center gap-1.5 text-xs text-muted">
                         <span className="size-2 rounded-full" style={{ background: personColor(people, d.person) }} />
-                        <span className="capitalize">{d.person}</span> · {formatDate(d.created_at)}
+                        <span>{vaultName(d.person)}</span> · {formatDate(d.created_at)}
                       </span>
                     </span>
                   </label>

@@ -4,6 +4,7 @@ import { runEnd } from '../../lib/nodeStatus'
 import { useRunStore } from '../../store/runStore'
 import { useUiStore } from '../../store/uiStore'
 import { HistoryIcon } from '../ui/Icons'
+import { vaultName } from '../../lib/vaultName'
 
 // The backend's RunMode values are "pruned" / "unpruned"; the UI calls pruning "parking".
 const MODE_LABEL = { pruned: 'parked', unpruned: 'unparked' } as const
@@ -45,7 +46,7 @@ export default function HistoryTab({ active }: { active: boolean }) {
                   <p className="mt-2.5 flex flex-wrap items-center gap-x-2 text-xs text-muted">
                     <span className={`font-medium ${runEnd(run).style}`}>{runEnd(run).label}</span>
                     · <span>{MODE_LABEL[run.mode]}</span> ·{' '}
-                    <span className="capitalize">{run.primary_person}</span> ·{' '}
+                    <span>{vaultName(run.primary_person)}</span> ·{' '}
                     <span>{formatDateTime(run.created_at)}</span>
                   </p>
                 </button>

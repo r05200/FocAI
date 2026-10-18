@@ -1,5 +1,6 @@
 import { create } from 'zustand'
-import { ApiError, isOffline, listRuns, pauseRun, resumeRun, stopRun } from '../api/client'
+import { ApiError, isOffline, listRuns, pauseRun, resumeRun, setManualMode, stopRun } from '../api/client'
+import { isLocalRun } from '../lib/localRun'
 import type { PauseResult, Run } from '../types'
 
 // What the prompt bar needs to know about the run being viewed.
@@ -7,12 +8,12 @@ import type { PauseResult, Run } from '../types'
 //   running  -> the prompt bar shows Pause and Stop
 //   paused   -> the agent is holding; the bar shows Play and Stop
 //   stopping -> Stop was pressed; waiting for the backend to confirm the run ended
-export type RunPhase = 'idle' | 'running' | 'paused' | 'stopping'
+type RunPhase = 'idle' | 'running' | 'paused' | 'stopping'
 
 // Lifecycle of one run: running <-> paused, then (stopping ->) ended.
-export type RunLife = 'running' | 'paused' | 'stopping' | 'ended'
+type RunLife = 'running' | 'paused' | 'stopping' | 'ended'
 
-export interface RunEntry {
+interface RunEntry {
   id: string
   question: string
   life: RunLife
@@ -20,6 +21,11 @@ export interface RunEntry {
 }
 
 interface RunState {
+  // Manual mode per run id, as last set from this browser (the switch in the tree's top-right
+  // corner); otherwise the run's own Run.manual applies. The backend is told on every flip
+  // (POST /runs/{id}/manual), and its answer (the run) is returned.
+  manual: Record<string, boolean>
+  setManual: (runId: string, manual: boolean, before: boolean) => Promise<Run | undefined>
   // Every run started in this session (newest last). Runs keep going while you're on the main
   // menu; the menu lists the ones still running.
   runs: RunEntry[]
@@ -45,6 +51,11 @@ interface RunState {
   finish: (runId: string) => void
   // Back to the main menu; the run keeps going.
   leave: () => void
+  // What's typed in the prompt bar. Going from the main menu into a run (its list, or History)
+  // puts the main menu's draft aside and empties the bar; going back brings the draft back.
+  prompt: string
+  setPrompt: (prompt: string) => void
+  mainDraft: string
   // Show a run's tree (e.g. from the main menu's list).
   open: (runId: string) => void
   // Show a run known only from the backend (a past run from History): track it, then show it.
@@ -54,6 +65,11 @@ interface RunState {
   // yet, so this is how the UI learns a run finished. Silent when the backend is unreachable.
   syncRuns: () => Promise<void>
 }
+
+// Leaving the main menu for a run: keep its draft for later and start the bar empty. (Moving
+// between runs keeps the draft already put aside.)
+const setDraftAside = (s: RunState): Partial<RunState> =>
+  s.viewingId === null ? { mainDraft: s.prompt, prompt: '' } : { prompt: '' }
 
 const fromRun = (r: Run): RunEntry => ({
   id: r.id,
@@ -95,6 +111,20 @@ const setLife = (runs: RunEntry[], id: string, life: RunLife) =>
   runs.map((r) => (r.id === id ? { ...r, life } : r))
 
 export const useRunStore = create<RunState>()((set, get) => ({
+  manual: {},
+  setManual: async (runId, manual, before) => {
+    set((s) => ({ manual: { ...s.manual, [runId]: manual } }))
+    if (isLocalRun(runId)) return // nothing on the backend to tell
+    try {
+      const run = await setManualMode(runId, manual)
+      set((s) => ({ manual: { ...s.manual, [runId]: run?.manual ?? manual } }))
+      return run ?? undefined
+    } catch (err) {
+      if (isOffline(err)) return // no backend: the switch just stays as set
+      set((s) => ({ manual: { ...s.manual, [runId]: before } })) // the backend refused: put it back
+      throw err
+    }
+  },
   runs: [],
   viewingId: null,
   runVaultOpen: false,
@@ -108,6 +138,9 @@ export const useRunStore = create<RunState>()((set, get) => ({
       viewingId: runId,
       runVaultOpen: false,
       error: null,
+      // The question just sent was the draft: nothing to bring back.
+      prompt: '',
+      mainDraft: '',
       streams: streamAbort ? { ...s.streams, [runId]: streamAbort } : s.streams,
     })),
 
@@ -116,15 +149,22 @@ export const useRunStore = create<RunState>()((set, get) => ({
     const id = runId ?? get().viewingId
     const run = get().runs.find((r) => r.id === id)
     if (!id || (run?.life !== 'running' && run?.life !== 'paused')) return
+    const before = run!.life
     set((s) => ({ runs: setLife(s.runs, id, 'stopping') }))
-    // 1. Stop listening locally so the UI freezes on the last event immediately.
-    get().streams[id]?.abort()
-    // 2. Tell the backend to kill the run (this is what actually halts the LLM).
+    get().streams[id]?.abort() // stop listening locally, so the UI freezes on the last event
+    // Tell the backend to kill the run (this is what actually halts the LLM). A run only in the
+    // browser ends here at once; so does one the backend says is already over (409) or doesn't
+    // know any more (404).
     try {
-      await stopRun(id)
+      if (!isLocalRun(id)) await stopRun(id)
     } catch (e) {
-      // Even if the call failed, don't leave the UI stuck on "stopping".
-      set({ error: e instanceof Error ? e.message : 'Could not stop the run' })
+      const over = e instanceof ApiError && e.fromBackend && (e.status === 409 || e.status === 404)
+      if (!over) {
+        // Refused, failed, or the backend couldn't be reached: the run may well still be going
+        // there, so it stays going here (Stop stays available) and the reason is shown.
+        set((s) => ({ runs: setLife(s.runs, id, before) }))
+        throw isOffline(e) ? new Error('Couldn’t reach the backend, so the run may still be going. Try Stop again.', { cause: e }) : e
+      }
     }
     get().finish(id)
   },
@@ -139,8 +179,11 @@ export const useRunStore = create<RunState>()((set, get) => ({
       return { runs: setLife(s.runs, runId, 'ended'), streams }
     }),
 
-  leave: () => set({ viewingId: null, runVaultOpen: false }),
-  open: (runId) => set({ viewingId: runId, runVaultOpen: false }),
+  leave: () => set((s) => ({ viewingId: null, runVaultOpen: false, prompt: s.mainDraft, mainDraft: '' })),
+  open: (runId) => set((s) => ({ viewingId: runId, runVaultOpen: false, ...setDraftAside(s) })),
+  prompt: '',
+  setPrompt: (prompt) => set({ prompt }),
+  mainDraft: '',
   openRunVault: () => set((s) => (s.viewingId ? { runVaultOpen: true } : {})),
   closeRunVault: () => set({ runVaultOpen: false }),
 
@@ -149,6 +192,7 @@ export const useRunStore = create<RunState>()((set, get) => ({
       runs: s.runs.some((r) => r.id === run.id) ? s.runs : [...s.runs, fromRun(run)],
       viewingId: run.id,
       runVaultOpen: false,
+      ...setDraftAside(s),
     })),
 
   syncRuns: async () => {
@@ -163,7 +207,10 @@ export const useRunStore = create<RunState>()((set, get) => ({
       const known = new Set(s.runs.map((r) => r.id))
       const runs = s.runs.map((r) => {
         const srv = byId.get(r.id)
-                if (!srv || (r.life !== 'running' && r.life !== 'paused')) return r
+        if (r.life !== 'running' && r.life !== 'paused') return r
+        // The backend no longer has it (its run data was reset): it's over. Runs that only exist
+        // in the browser, and ones started moments ago (this list may predate them), are left be.
+        if (!srv) return isLocalRun(r.id) || Date.now() - r.startedAt < FORGOTTEN_AFTER_MS ? r : { ...r, life: 'ended' as const }
         // Ended on the backend -> ended here; otherwise follow its paused flag (it may have been
         // paused or resumed from another tab).
         const life = fromRun(srv).life
@@ -174,6 +221,9 @@ export const useRunStore = create<RunState>()((set, get) => ({
     })
   },
 }))
+
+// A tracked run missing from GET /runs for longer than this is taken as gone.
+const FORGOTTEN_AFTER_MS = 30_000
 
 // The prompt bar's view of the run on screen.
 export function selectPhase(s: RunState): RunPhase {

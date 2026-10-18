@@ -161,6 +161,7 @@ class LLM:
         self._stopped: set[str] = set()  # scopes that were stopped
         self._last_call = 0.0  # monotonic time of the last API call (free-tier pacing)
         self._pace = asyncio.Lock()
+        self._key_gen = 0  # bumped when a 429 switches this LLM to its backup key
 
     @contextmanager
     def scope(self, name: str) -> Iterator[None]:
@@ -194,12 +195,27 @@ class LLM:
             key = getattr(self.cfg, f"gemini_api_key_{self.role}")
             if not key:
                 raise LLMError(f"{env} is not set (see .env.example)")
-            from google import genai
-            from google.genai import types
-
-            self._client = genai.Client(api_key=key, http_options=types.HttpOptions(
-                timeout=int(self.cfg.llm_timeout_s * 1000)))  # milliseconds
+            self._client = self._make_client(key)
         return self._client
+
+    def _make_client(self, key: str) -> Any:
+        from google import genai
+        from google.genai import types
+
+        return genai.Client(api_key=key, http_options=types.HttpOptions(
+            timeout=int(self.cfg.llm_timeout_s * 1000)))  # milliseconds
+
+    def _switch_to_backup_key(self) -> bool:
+        """After a 429: move this LLM to its backup key (GEMINI_API_KEY_<ROLE>_2) for good, if one
+        is set and not already in use. Quiet: it is only logged, never shown to the user."""
+        backup = getattr(self.cfg, f"gemini_api_key_{self.role}_2", "")
+        if not backup or self._key_gen > 0:
+            return False
+        self._client = self._make_client(backup)
+        self._key_gen += 1
+        log.warning("Gemini %s key hit a 429; switched to GEMINI_API_KEY_%s_2 and resuming",
+                    self.role, self.role.upper())
+        return True
 
     def _record(self, purpose: str, tokens: TokenCount) -> None:
         self.usage.setdefault(purpose, TokenCount()).add(tokens)
@@ -219,12 +235,14 @@ class LLM:
         from google.genai import errors
 
         scope = _scope.get()
-        for attempt in range(MAX_API_ATTEMPTS):
+        attempt = 0
+        while True:
             if scope in self._stopped:
                 raise LLMCancelled(f"scope {scope!r} was stopped")
             await self._wait_turn()
             if scope in self._stopped:
                 raise LLMCancelled(f"scope {scope!r} was stopped")
+            gen = self._key_gen
             task = asyncio.ensure_future(fn(**kwargs))
             self._inflight[task] = scope
             try:
@@ -236,14 +254,20 @@ class LLM:
                 task.cancel()  # the caller itself was cancelled: do not leave the request running
                 raise
             except errors.APIError as e:
+                if e.code == 429 and (self._key_gen != gen or self._switch_to_backup_key()):
+                    # Freeze this call and redo it on the backup key: no wait, no attempt used
+                    # (also when another call already made the switch while this one was in flight).
+                    fn = getattr(self.client.aio.models, getattr(fn, "__name__", ""), fn)
+                    continue
                 if e.code not in RETRYABLE_STATUS or attempt == MAX_API_ATTEMPTS - 1:
-                    log.error("500 server issue: the Gemini API call failed (HTTP %s: %s). If "
+                    log.error("500 server issue: the Gemini %s API call failed (HTTP %s: %s). If "
                               "this keeps happening, change GEMINI_API_KEY_%s in .env.",
-                              e.code, e.message, self.role.upper())
+                              self.role.upper(), e.code, e.message, self.role.upper())
                     raise LLMError(f"Gemini API error {e.code}: {e.message}") from e
                 delay = _retry_delay(e, attempt)
                 log.warning("Gemini API error %s, retrying in %ss", e.code, delay)
                 await asyncio.sleep(delay)
+                attempt += 1
             except (httpx.TransportError, TimeoutError) as e:  # a dropped or stalled connection
                 if attempt == MAX_API_ATTEMPTS - 1:
                     log.error("the Gemini %s API could not be reached (%s: %s)",
@@ -253,10 +277,10 @@ class LLM:
                 log.warning("Gemini API unreachable (%s), retrying in %ss", type(e).__name__,
                             delay)
                 await asyncio.sleep(delay)
+                attempt += 1
             finally:
                 self._inflight.pop(task, None)
                 self._stopping.discard(task)
-        raise AssertionError("unreachable")
 
     async def generate(self, schema: type[T], prompt: str, *, model: str, purpose: str,
                        system: str | None = None) -> Generated[T]:

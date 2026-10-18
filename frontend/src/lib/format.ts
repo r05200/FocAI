@@ -19,3 +19,11 @@ export function formatDateTime(seconds: number): string {
 export function formatScore(score: number): string {
   return `${(score * 10).toFixed(1)} / 10`
 }
+
+// The backend files a link it couldn't read with the summary "No summary found." (optionally with
+// the reason in brackets: "No summary found (page not reachable)."). Returns that reason ('' if
+// none given), or null for a real summary.
+export function missingSummary(summary: string): string | null {
+  const m = /^No summary found(?:\s*\((.*)\))?\.?$/s.exec(summary.trim())
+  return m ? (m[1] ?? '').trim() : null
+}

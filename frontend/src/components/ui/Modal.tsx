@@ -12,6 +12,7 @@ interface Props {
 // Mount it only while open; unmounting removes it.
 export default function Modal({ title, size = 'md', onClose, children }: Props) {
   const dialog = useRef<HTMLDialogElement>(null)
+  const pressedBackdrop = useRef(false)
 
   // No cleanup: close() would fire onClose, and unmounting the element ends the modal anyway.
   useEffect(() => {
@@ -29,7 +30,13 @@ export default function Modal({ title, size = 'md', onClose, children }: Props) 
       aria-label={title}
       onClose={onClose}
       // A click on the backdrop lands on the <dialog> element itself.
-      onClick={(e) => e.target === e.currentTarget && onClose()}
+      // Only a press that starts and ends on the backdrop closes it: dragging out of a field to
+      // select its text also fires a click on the dialog, which must not lose what was typed.
+      onMouseDown={(e) => (pressedBackdrop.current = e.target === e.currentTarget)}
+      onClick={(e) => {
+        if (e.target === e.currentTarget && pressedBackdrop.current) onClose()
+        pressedBackdrop.current = false
+      }}
       className={`m-auto ${size === 'lg' ? 'w-[min(560px,calc(100%-32px))]' : 'w-[min(440px,calc(100%-32px))]'} rounded-2xl border border-line bg-elev p-0 text-fg shadow-2xl backdrop:bg-black/50`}
     >
       <div className="flex items-center justify-between px-5 pt-5 pb-4">

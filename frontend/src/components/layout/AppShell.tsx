@@ -25,13 +25,22 @@ const VIEW_STATE = {
   after: 'pointer-events-none scale-[0.3] opacity-0 blur-sm duration-300',
 }
 
+const RETRY_REMOTE_MS = 10_000
+
 export default function AppShell() {
   const tab = useUiStore((s) => s.tab)
   const loadRemote = useVaultStore((s) => s.loadRemote)
-  // Load the vaults, cards and directives from the backend once at start.
+  // Load the vaults, cards and directives from the backend at start, and keep trying every few
+  // seconds while it can't be reached (so a backend started after the page is picked up).
+  const remoteStatus = useVaultStore((s) => s.remote.status)
   useEffect(() => {
     void loadRemote()
   }, [loadRemote])
+  useEffect(() => {
+    if (remoteStatus !== 'offline') return
+    const t = setInterval(() => void loadRemote(), RETRY_REMOTE_MS)
+    return () => clearInterval(t)
+  }, [remoteStatus, loadRemote])
   const activeIndex = TAB_ORDER.indexOf(tab)
 
   return (

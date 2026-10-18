@@ -9,7 +9,7 @@ export interface Vec3 {
 
 // Same maths as CSS cubic-bezier(x1, y1, x2, y2): solve x(t) = progress with Newton's method,
 // then return y(t).
-export function cubicBezier(x1: number, y1: number, x2: number, y2: number) {
+function cubicBezier(x1: number, y1: number, x2: number, y2: number) {
   const bez = (a: number, b: number, t: number) => 3 * a * (1 - t) ** 2 * t + 3 * b * (1 - t) * t ** 2 + t ** 3
   const slope = (a: number, b: number, t: number) =>
     3 * a * (1 - t) ** 2 + 6 * (b - a) * (1 - t) * t + 3 * (1 - b) * t ** 2
@@ -28,7 +28,7 @@ export function cubicBezier(x1: number, y1: number, x2: number, y2: number) {
 }
 
 // Gentle start and a long, soft landing.
-export const EASE_IN_OUT = cubicBezier(0.65, 0, 0.35, 1)
+const EASE_IN_OUT = cubicBezier(0.65, 0, 0.35, 1)
 // Fast out of the gate, settles slowly: good for the fly-in.
 export const EASE_OUT = cubicBezier(0.22, 1, 0.36, 1)
 

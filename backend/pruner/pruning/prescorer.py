@@ -1,14 +1,12 @@
 """Pre-scoring: screen candidate experiments before they run.
 
 For one set of sibling candidates (the agent's proposals from one parent):
-  1. Duplicate check (embeddings, no LLM): flag candidates that nearly repeat earlier work, a
-     failed-log entry, or an earlier sibling.
-  2. Vault search: the chosen people's items close to each candidate (nothing if nothing is
+  1. Vault search: the chosen people's items close to each candidate (nothing if nothing is
      close: cfg.similarity_threshold, at most cfg.search_top_k).
-  3. One judge call (fast model) ranks the siblings against each other: reason first, then
+  2. One judge call (fast model) ranks the siblings against each other: reason first, then
      1..10 plausible / relevant / novel (tenths, stored as 0..1 by scale.to_unit), citing
-     vault notes.
-  4. Zones from the average (overall) on the 1..10 scale: below cfg.pre_score_min -> park
+     vault notes. The judge also decides whether a candidate repeats earlier work or a dead end.
+  3. Zones from the average (overall) on the 1..10 scale: below cfg.pre_score_min -> park
      (verdict park, restorable); below cfg.run_score_min -> borderline (verdict keep; the agent
      may look ahead or ask a human); otherwise run. The UI can show low / medium / high by
      translating the number.
@@ -30,7 +28,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
-import numpy as np
 from pydantic import BaseModel, Field
 
 from pruner.core import prompts
@@ -38,12 +35,11 @@ from pruner.core.config import Config, get_config
 from pruner.core.llm import LLM, TokenCount
 from pruner.core.models import DeadEnd, Decision, Directive, Instruction, Node, Objective, PreScore
 from pruner.pruning.scale import to_ten, to_unit
-from pruner.vault.store import VaultStore, one_line, unit_vectors
+from pruner.vault.store import VaultStore, one_line
 
 log = logging.getLogger(__name__)
 
 Zone = Literal["park", "borderline", "run"]
-DUPLICATE_THRESHOLD = 0.9  # cosine similarity; tune on real hypotheses (move to config if kept)
 
 
 class CandidateRating(BaseModel):
@@ -120,7 +116,6 @@ class PreScored:
     decision: Decision
     zone: Zone
     retrieved: list[str] = field(default_factory=list)  # vault ids shown to the judge
-    duplicate_of: str | None = None  # the earlier text this nearly repeats, if any
     tokens: TokenCount = field(default_factory=TokenCount)  # this node's share of the call
 
 
@@ -131,43 +126,20 @@ class PreScorer:
         self.vault = vault
         self.llm = llm or vault.llm
 
-    async def find_duplicates(self, nodes: Sequence[Node],
-                              earlier: Sequence[str]) -> dict[str, str]:
-        """node id -> the earlier text it nearly repeats. `earlier` holds the descriptions of
-        earlier experiments and failed-log entries; earlier siblings are checked too."""
-        texts = [n.full_text() for n in nodes]
-        vectors = np.array(await self.llm.embed([*texts, *earlier], task="SEMANTIC_SIMILARITY",
-                                                purpose="scorer_embed"), dtype=np.float32)
-        sims = unit_vectors(vectors[: len(nodes)]) @ unit_vectors(vectors).T
-        known = [*texts, *earlier]
-        found: dict[str, str] = {}
-        for i, node in enumerate(nodes):
-            for j in range(len(known)):
-                if j == i or (j < len(nodes) and j > i):  # later siblings are not "earlier"
-                    continue
-                if sims[i, j] >= DUPLICATE_THRESHOLD:
-                    found[node.id] = known[j]
-                    break
-        return found
-
     async def score_siblings(self, nodes: Sequence[Node], *, question: str,
                              objectives: list[Objective], people: Sequence[str],
                              parent: Node | None = None, dead_ends: Sequence[DeadEnd] = (),
-                             earlier: Sequence[str] = (),
                              instructions: Sequence[Instruction] = (),
                              directives: Sequence[Directive | str] = ()) -> list[PreScored]:
         """Rate sibling candidates against each other in a single judge call. Results are in
         the same order as `nodes`."""
         if not nodes:
             return []
-        duplicates = await self.find_duplicates(nodes, earlier)
         hits = await self._search(nodes, people)
 
         blocks = []
         for node, node_hits in zip(nodes, hits, strict=True):
             lines = [f"Candidate {node.id} ({node.type}): {node.full_text()}"]
-            if node.id in duplicates:
-                lines.append(f"Possible repeat of earlier work: {duplicates[node.id]}")
             blocks.append("\n".join([*lines, *self._vault_lines(people, node_hits)]))
 
         prompt = prompts.render(
@@ -181,9 +153,7 @@ class PreScorer:
         )
         gen = await self.llm.generate(PreScoreBatch, prompt, model=self.cfg.fast_model,
                                       purpose="scorer")
-        return self._results(
-            nodes, hits, gen,
-            park_below=self.cfg.pre_score_min, duplicates=duplicates)
+        return self._results(nodes, hits, gen, park_below=self.cfg.pre_score_min)
 
     async def rescore(self, nodes: Sequence[Node], *, question: str,
                       objectives: list[Objective], people: Sequence[str],
@@ -309,8 +279,8 @@ class PreScorer:
         return [header, *(f"{i.id} ({i.kind}, {i.person}): {i.title}. {i.summary}"
                           for i, _ in node_hits)] if node_hits else [header, "(nothing close)"]
 
-    def _results(self, nodes: Sequence[Node], hits: list[list], gen, *, park_below: float,
-                 duplicates: dict[str, str] | None = None) -> list[PreScored]:
+    def _results(self, nodes: Sequence[Node], hits: list[list], gen, *,
+                 park_below: float) -> list[PreScored]:
         judged = {r.node_id: r for r in gen.value.ratings}
         share = TokenCount(input=gen.tokens.input // len(nodes),
                            output=gen.tokens.output // len(nodes), calls=gen.tokens.calls)
@@ -335,8 +305,7 @@ class PreScorer:
                     verdict="park" if zone == "park" else "keep", stage="pre",
                     reason=one_line(r.reason),
                     vault_items_used=[i for i in dict.fromkeys(r.vault_items_used) if i in shown]),
-                zone=zone, retrieved=[i.id for i, _ in node_hits],
-                duplicate_of=(duplicates or {}).get(node.id), tokens=share,
+                zone=zone, retrieved=[i.id for i, _ in node_hits], tokens=share,
             ))
         return results
 

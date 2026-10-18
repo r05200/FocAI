@@ -1,4 +1,4 @@
-# Pruner
+# FocAI
 
 A human-steered research agent with a knowledge vault, built for Hack the Valley 11.
 Agents explore, humans steer, and the tree shows everyone what is happening and why.

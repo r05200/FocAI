@@ -3,7 +3,7 @@ import { fixtureSnapshot } from '../fixtures'
 import { isOffline, listRuns } from '../api/client'
 import type { Run } from '../types'
 
-export interface RunHistory {
+interface RunHistory {
   runs: Run[]
   loading: boolean
   offline: boolean

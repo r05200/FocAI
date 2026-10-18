@@ -29,6 +29,7 @@
         "id": "i_spec",
         "kind": "spec",
         "text": "Focus on methods that need no retraining. [fixture spec]",
+        "active": true,
         "created_at": 1760000000.0
       }
     ],
@@ -43,6 +44,8 @@
     ],
     "mode": "pruned",
     "status": "done",
+    "end_reason": null,
+    "error": null,
     "paused": false,
     "caps": {
       "max_depth": 4,
@@ -54,6 +57,10 @@
     "workspace": null,
     "command": null,
     "awaiting": null,
+    "fork_id": null,
+    "manual": false,
+    "best_node_id": null,
+    "patch_ready": false,
     "final_answer": "Placeholder final answer synthesized from kept branches.",
     "totals": {
       "tokens": {
@@ -64,6 +71,7 @@
       "nodes_total": 5,
       "nodes_parked": 1,
       "nodes_restored": 1,
+      "experiments_run": 0,
       "elapsed_s": 94.2
     },
     "created_at": 1760000000.0
@@ -104,8 +112,15 @@
       "pre_band": null,
       "closed": false,
       "priority": null,
+      "directive_score": null,
+      "directive_reason": "",
       "needs_remeasure": false,
       "missing_metrics": [],
+      "pending_action": null,
+      "awaiting_choice": false,
+      "revert_to": null,
+      "learned_ids": [],
+      "branch_conclusion": false,
       "tool_calls": {},
       "created_at": 1760000001.0
     },
@@ -159,8 +174,15 @@
       "pre_band": null,
       "closed": false,
       "priority": null,
+      "directive_score": null,
+      "directive_reason": "",
       "needs_remeasure": false,
       "missing_metrics": [],
+      "pending_action": null,
+      "awaiting_choice": false,
+      "revert_to": null,
+      "learned_ids": [],
+      "branch_conclusion": false,
       "tool_calls": {},
       "created_at": 1760000004.0
     },
@@ -213,8 +235,15 @@
       "pre_band": null,
       "closed": false,
       "priority": null,
+      "directive_score": null,
+      "directive_reason": "",
       "needs_remeasure": false,
       "missing_metrics": [],
+      "pending_action": null,
+      "awaiting_choice": false,
+      "revert_to": null,
+      "learned_ids": [],
+      "branch_conclusion": false,
       "tool_calls": {},
       "created_at": 1760000004.0
     },
@@ -286,8 +315,15 @@
       "pre_band": null,
       "closed": false,
       "priority": null,
+      "directive_score": null,
+      "directive_reason": "",
       "needs_remeasure": false,
       "missing_metrics": [],
+      "pending_action": null,
+      "awaiting_choice": false,
+      "revert_to": null,
+      "learned_ids": [],
+      "branch_conclusion": false,
       "tool_calls": {},
       "created_at": 1760000004.0
     },
@@ -336,8 +372,15 @@
       "pre_band": null,
       "closed": false,
       "priority": null,
+      "directive_score": null,
+      "directive_reason": "",
       "needs_remeasure": false,
       "missing_metrics": [],
+      "pending_action": null,
+      "awaiting_choice": false,
+      "revert_to": null,
+      "learned_ids": [],
+      "branch_conclusion": false,
       "tool_calls": {},
       "created_at": 1760000014.0
     }
@@ -364,5 +407,6 @@
       "created_at": 1760000041.0
     }
   ],
-  "findings": []
+  "findings": [],
+  "suggestions": []
 }

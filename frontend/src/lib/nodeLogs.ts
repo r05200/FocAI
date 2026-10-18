@@ -3,6 +3,7 @@
 // searches, activity lines). Used until the backend serves real per-step logs.
 import { formatScore } from './format'
 import type { LogEntry, PrunerEvent, TreeNode } from '../types'
+import { vaultName } from './vaultName'
 
 export function deriveNodeLogs(node: TreeNode, events: PrunerEvent[] = []): LogEntry[] {
   const out: LogEntry[] = []
@@ -17,7 +18,7 @@ export function deriveNodeLogs(node: TreeNode, events: PrunerEvent[] = []): LogE
   if (mine.length > 0) {
     for (const e of mine) {
       if (e.type === 'vault_retrieved') {
-        add({ ts: e.ts, kind: 'tool_call', title: `Searched ${e.person}'s vault`, text: e.query, tool: 'search_vault', args: { query: e.query } })
+        add({ ts: e.ts, kind: 'tool_call', title: `Searched ${vaultName(e.person)}`, text: e.query, tool: 'search_vault', args: { query: e.query } })
         add({
           ts: e.ts,
           kind: 'tool_result',

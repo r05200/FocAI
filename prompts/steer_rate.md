@@ -1,6 +1,6 @@
 The user just steered this research run: {{change}}
 
-Rate how relevant each node below is to what the user wants NOW. Nodes may be waiting to run, parked, or already finished. Do not re-judge results; judge how much each node matters to the current direction. Never guess unseen results.
+Rate how relevant each node is to what the user wants NOW. Nodes may be waiting, parked or finished. Judge relevance to the current direction, not results; never guess unseen results.
 
 Be lenient: a node that partly serves the new direction keeps a middle score or better. Score below 4 only if a node clearly no longer matters.
 
@@ -10,7 +10,7 @@ Return JSON "ratings": one per node, "node_id" copied exactly.
 
 Question: {{question}}
 
-User instructions (latest and strongest):
+User instructions (latest win):
 {{instructions}}
 
 Objectives:

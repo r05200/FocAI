@@ -20,9 +20,9 @@ const SAMPLE_IDEAS: RunIdea[] = [
 ]
 
 // 'unsupported': the backend answered but has no run vault (yet). 'offline': it couldn't be reached.
-export type RunVaultStatus = 'loading' | 'ok' | 'unsupported' | 'offline'
+type RunVaultStatus = 'loading' | 'ok' | 'unsupported' | 'offline'
 
-export interface RunVaultState {
+interface RunVaultState {
   ideas: RunIdea[]
   branches: string[]
   status: RunVaultStatus
@@ -43,9 +43,12 @@ export function useRunVault(runId: string | null, poll: boolean): RunVaultState 
     () =>
       getRunVault(key!).then(
         (v): Loaded => ({ status: 'ok', ideas: v.ideas }),
-        // 404 from the backend: no such route (or run) yet. Anything unreachable: sample data.
-        (err): Loaded =>
-          isOffline(err) ? { status: 'offline', ideas: SAMPLE_IDEAS } : { status: 'unsupported', ideas: [] },
+        (err): Loaded => {
+          // Once the real ideas are on screen, a failed poll keeps them (a rejection does).
+          if (loaded?.status === 'ok') throw err
+          // 404 from the backend: no such route (or run) yet. Anything unreachable: sample data.
+          return isOffline(err) ? { status: 'offline', ideas: SAMPLE_IDEAS } : { status: 'unsupported', ideas: [] }
+        },
       ),
     poll,
     4000,

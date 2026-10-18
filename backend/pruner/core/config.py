@@ -40,6 +40,8 @@ class Config:
     # quotas. Hidden from repr so a printed Config never shows them.
     gemini_api_key_agent: str = field(repr=False)
     gemini_api_key_supporting: str = field(repr=False)
+    # The agent's backup: on a 429 its LLM switches to this key and resumes (see llm.py).
+    gemini_api_key_agent_2: str = field(repr=False)
     fast_model: str  # scoring and ingestion
     strong_model: str  # planning and synthesis
     embedding_model: str
@@ -135,6 +137,7 @@ def get_config() -> Config:
     return Config(
         gemini_api_key_agent=os.environ.get("GEMINI_API_KEY_AGENT", ""),
         gemini_api_key_supporting=os.environ.get("GEMINI_API_KEY_SUPPORTING", ""),
+        gemini_api_key_agent_2=os.environ.get("GEMINI_API_KEY_AGENT_2", ""),
         fast_model=_env("FAST_MODEL", "gemini-3.5-flash-lite"),
         strong_model=_env("STRONG_MODEL", "gemini-3.5-flash"),
         embedding_model=_env("EMBEDDING_MODEL", "gemini-embedding-001"),

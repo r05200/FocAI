@@ -3,7 +3,7 @@ import { SAMPLE_GRAPH, SAMPLE_PEOPLE } from '../fixtures/seed'
 import { useVaultStore, type RemoteStatus } from '../store/vaultStore'
 import type { VaultGraph } from '../types'
 
-export interface VaultGraphState {
+interface VaultGraphState {
   graph: VaultGraph
   status: RemoteStatus
 }

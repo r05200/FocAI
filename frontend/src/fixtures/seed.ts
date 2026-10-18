@@ -4,7 +4,7 @@
 import type { Directive } from '../types'
 import { fixtureVaultGraph } from './index'
 
-export const SEED_SAMPLE_DATA = true
+const SEED_SAMPLE_DATA = true
 
 export const SAMPLE_GRAPH = SEED_SAMPLE_DATA ? fixtureVaultGraph : { nodes: [], edges: [] }
 

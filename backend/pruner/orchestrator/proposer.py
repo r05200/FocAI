@@ -13,8 +13,8 @@ expand(parent) does, in order:
   hypothesis carries 1-3 search queries instead of an edit (propose_research.md). They are only
   checked for having queries and not repeating earlier searches (no repair call, no version).
   5. The pre-score judge ranks the siblings together (PreScorer.score_siblings). The low zone is
-     parked (kept, restorable, recorded as a dead end); a near-duplicate of earlier work is parked
-     too. pre_band shows the zone as low / medium / high.
+     parked (kept, restorable, recorded as a dead end). pre_band shows the zone as low / medium /
+     high.
 """
 
 from __future__ import annotations
@@ -32,7 +32,6 @@ from pruner.core.events import Activity, NodeCreated, NodeUpdated
 from pruner.core.llm import LLM
 from pruner.core.models import (
     DeadEnd,
-    Decision,
     Edit,
     FileEdit,
     HypothesisSpec,
@@ -274,7 +273,6 @@ class HypothesisPhase:
     async def _create_and_score(self, host: RunManager, state: LiveRun, parent: Node,
                                 base: str | None, kept: list) -> list[Node]:
         run = state.run
-        earlier = [n.full_text() for n in state.nodes]
         ids = next_node_ids(state.nodes, len(kept))
         nodes = []
         for node_id, (p, edit, checked, family) in zip(ids, kept, strict=True):
@@ -307,15 +305,11 @@ class HypothesisPhase:
         await host._checkpoint(state)
         scored = await self.prescorer.score_siblings(
             nodes, question=run.question, objectives=run.objectives, people=run.vault_people,
-            parent=parent, dead_ends=state.dead_ends, earlier=earlier,
+            parent=parent, dead_ends=state.dead_ends,
             instructions=run.instructions, directives=run.directives)
         for node, s in zip(nodes, scored, strict=True):
             pre.apply(node, s)
             node.pre_band = BANDS[s.zone]
-            if s.duplicate_of and node.status != "parked":
-                node.status = "parked"
-                node.decision = Decision(verdict="park", stage="pre",
-                                         reason=f"Repeats earlier work: {s.duplicate_of}")
             overall = to_ten(s.pre_score.overall)
             host._log(state, node.id, LogEntry(
                 kind="decision", title=f"Pre-score {overall:.1f} / 10 ({node.pre_band})",

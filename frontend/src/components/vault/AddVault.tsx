@@ -1,34 +1,13 @@
 import { useState, type FormEvent } from 'react'
 import { ApiError } from '../../api/client'
+import { useUiStore } from '../../store/uiStore'
 import { useVaultStore } from '../../store/vaultStore'
 import { PERSON_PATTERN } from '../../types'
-import { AddVaultIcon } from '../ui/Icons'
 import Modal from '../ui/Modal'
+import { vaultId, vaultName } from '../../lib/vaultName'
 
-// Turn what was typed into a name: trim, lowercase, spaces become hyphens.
-const normalize = (raw: string) => raw.trim().toLowerCase().replace(/\s+/g, '-')
-
-// Button (violet, vault-with-plus icon: deliberately unlike the white + that adds knowledge) and
-// the dialog it opens. Creates a new, empty vault for a team member.
-export default function AddVault({ people }: { people: string[] }) {
-  const [open, setOpen] = useState(false)
-  return (
-    <>
-      <button
-        aria-label="Add vault"
-        aria-haspopup="dialog"
-        title="Add vault"
-        onClick={() => setOpen(true)}
-        className="grid size-9.5 place-items-center rounded-xl bg-kind-question text-white transition-opacity hover:opacity-85"
-      >
-        <AddVaultIcon />
-      </button>
-      {open && <AddVaultDialog people={people} onClose={() => setOpen(false)} />}
-    </>
-  )
-}
-
-function AddVaultDialog({ people, onClose }: { people: string[]; onClose: () => void }) {
+// The dialog behind the sidebar's "New vault" entry. Creates a new, empty vault of your own.
+export default function AddVaultDialog({ people, onClose }: { people: string[]; onClose: () => void }) {
   const createVault = useVaultStore((s) => s.createVault)
   const setPerson = useVaultStore((s) => s.setPerson)
   const [name, setName] = useState('')
@@ -37,7 +16,7 @@ function AddVaultDialog({ people, onClose }: { people: string[]; onClose: () => 
 
   async function submit(e: FormEvent) {
     e.preventDefault()
-    const value = normalize(name)
+    const value = vaultId(name)
     if (!value) return setError('Enter a name for the vault.')
     if (!PERSON_PATTERN.test(value)) {
       return setError(
@@ -45,10 +24,10 @@ function AddVaultDialog({ people, onClose }: { people: string[]; onClose: () => 
           ? 'Keep the name to 32 characters or fewer.'
           : /^[_-]/.test(value)
             ? 'Start the name with a letter or number.'
-            : 'Use only letters, numbers, - and _ (no other symbols).',
+            : 'Use only letters, numbers and spaces (no other symbols).',
       )
     }
-    const exists = () => setError(`A vault named “${value}” already exists.`)
+    const exists = () => setError(`A vault named “${vaultName(value)}” already exists.`)
     if (people.includes(value)) return exists()
 
     setSaving(true)
@@ -60,16 +39,18 @@ function AddVaultDialog({ people, onClose }: { people: string[]; onClose: () => 
       if (err instanceof ApiError && err.status === 409) return exists()
       return setError(err instanceof Error ? err.message : 'Could not create the vault.')
     }
-    setPerson(value) // jump straight to the new, empty vault
+    // Jump straight to the new, empty vault (the dialog opens from the sidebar on any tab).
+    setPerson(value)
+    useUiStore.getState().setTab('vault')
     onClose()
   }
 
   return (
-    <Modal title="Add vault" onClose={onClose}>
+    <Modal title="New vault" onClose={onClose}>
       <form onSubmit={submit} noValidate>
         <p className="mb-4 text-xs text-muted">
-          A vault holds one team member’s papers, notes and questions. It starts empty; add knowledge to
-          it with the + button.
+          Create a vault of your own to collect papers, notes and questions. It starts empty and shows
+          up under Your Vaults; add to it with the + button once it’s open.
         </p>
         <label className="mb-1 block text-xs font-medium text-muted" htmlFor="vault-name">
           Name
@@ -78,7 +59,7 @@ function AddVaultDialog({ people, onClose }: { people: string[]; onClose: () => 
           id="vault-name"
           data-autofocus
           value={name}
-          placeholder="e.g. carol"
+          placeholder="e.g. KV cache notes"
           autoComplete="off"
           spellCheck={false}
           aria-invalid={!!error}

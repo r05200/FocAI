@@ -1,9 +1,11 @@
 import { useState } from 'react'
 import { useDirectives } from '../../hooks/useDirectives'
 import { personColor } from '../../lib/colors'
+import { isViewOnly } from '../../lib/vaultAccess'
 import { formatDate } from '../../lib/format'
 import { useVaultStore } from '../../store/vaultStore'
 import { CloseIcon } from '../ui/Icons'
+import { vaultName } from '../../lib/vaultName'
 
 // Right-hand sidebar listing directives for whoever's vault is shown. It's a flex sibling of the
 // graph, so opening it narrows the map instead of covering it.
@@ -28,8 +30,8 @@ export default function DirectivesPanel({ people }: { people: string[] }) {
         <header className="flex items-center justify-between px-4 pt-4 pb-3">
           <div>
             <h2 className="font-semibold">Directives</h2>
-            <p className="text-xs text-muted capitalize">
-              {person ? `${person}'s` : 'Team'} · {directives.length} active
+            <p className="text-xs text-muted">
+              {vaultName(person)} · {directives.length} active
             </p>
           </div>
           <button
@@ -50,10 +52,11 @@ export default function DirectivesPanel({ people }: { people: string[] }) {
               <p className="pr-6 text-sm leading-relaxed">{d.text}</p>
               <p className="mt-1.5 flex items-center gap-1.5 text-xs text-muted">
                 <span className="size-2 rounded-full" style={{ background: personColor(people, d.person) }} />
-                <span className="capitalize">{d.person}</span> · {formatDate(d.created_at)}
+                <span>{vaultName(d.person)}</span> · {formatDate(d.created_at)}
               </p>
               {failed === d.id && <p className="mt-1 text-xs text-kind-correction">Couldn’t delete that.</p>}
-              {/* DELETE /vault/directives/{id} */}
+              {/* DELETE /vault/directives/{id}. Not on a view-only person's (a teammate's). */}
+              {!isViewOnly(d.person) && (
               <button
                 aria-label="Delete directive"
                 title="Delete"
@@ -65,6 +68,7 @@ export default function DirectivesPanel({ people }: { people: string[] }) {
               >
                 <CloseIcon />
               </button>
+              )}
             </li>
           ))}
         </ul>

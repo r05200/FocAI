@@ -1,4 +1,6 @@
-Turn this request into 3 to 5 point-form objectives: short, concrete, checkable (max 15 words, start with a verb like Find, Show, Compare). Keep the user's constraints and priorities; invent nothing; no overlap.
+Turn this request into point-form objectives that say what the user asked for and nothing more. Use only the question and the research specs. Write one objective per distinct thing they asked for: at least 1, at most 5, and never pad the list to reach a number. Each is short, concrete and checkable (max 15 words, start with a verb like Find, Show, Compare), keeps the user's own constraints and priorities, and does not overlap another.
+
+Do not invent. No goals, methods, metrics, comparisons, baselines or background the request does not mention, and no "best practice" extras. A narrow request gives a short list. Standing directives, if present, are constraints on how to work: do not turn them into objectives unless the request itself asks for that.
 
 Also report the command the user gave for running one experiment, if they gave one: copy it character for character from the question, the specs or the attached files, without adding or changing anything. If they did not write one, use null. Do not make one up.
 

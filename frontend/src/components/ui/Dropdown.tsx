@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
 import { CheckIcon, ChevronDownIcon } from './Icons'
 
-export interface DropdownOption {
+interface DropdownOption {
   value: string
   label: string
   color?: string // CSS colour for the little dot
@@ -12,13 +12,15 @@ interface Props {
   options: DropdownOption[]
   onChange: (value: string) => void
   disabled?: boolean
+  // Slimmer, borderless trigger for tight spots like the prompt bar.
+  compact?: boolean
   'aria-label': string
 }
 
 // Self-styled select (a native <select> can't be themed): button + listbox popup that matches the
 // app's other popups. Keyboard: Enter/Space/Arrows open; Arrows/Home/End move; Enter picks;
 // Escape or Tab closes. Closes on an outside click.
-export default function Dropdown({ value, options, onChange, disabled, 'aria-label': ariaLabel }: Props) {
+export default function Dropdown({ value, options, onChange, disabled, compact, 'aria-label': ariaLabel }: Props) {
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(0)
   const root = useRef<HTMLDivElement>(null)
@@ -34,6 +36,11 @@ export default function Dropdown({ value, options, onChange, disabled, 'aria-lab
     document.addEventListener('mousedown', onDown)
     return () => document.removeEventListener('mousedown', onDown)
   }, [open])
+
+  // Keep the highlighted option in view when the arrow keys move it past the list's edge.
+  useEffect(() => {
+    if (open) document.getElementById(`${id}-${active}`)?.scrollIntoView({ block: 'nearest' })
+  }, [open, active, id])
 
   function openMenu() {
     setActive(selected)
@@ -77,10 +84,14 @@ export default function Dropdown({ value, options, onChange, disabled, 'aria-lab
         aria-activedescendant={open ? `${id}-${active}` : undefined}
         onClick={() => (open ? setOpen(false) : openMenu())}
         onKeyDown={onKeyDown}
-        className="flex h-9.5 items-center gap-2 rounded-xl border border-line bg-elev pr-2.5 pl-3 text-base font-semibold capitalize transition-colors outline-none hover:bg-hover focus-visible:border-fg disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-elev"
+        className={`flex items-center gap-2 capitalize transition-colors outline-none disabled:cursor-not-allowed disabled:opacity-40 ${
+          compact
+            ? `h-9 rounded-full pr-2 pl-3 text-sm font-medium hover:bg-hover focus-visible:bg-hover disabled:hover:bg-transparent ${open ? 'bg-hover' : 'text-muted hover:text-fg'}`
+            : 'h-9.5 rounded-xl border border-line bg-elev pr-2.5 pl-3 text-base font-semibold hover:bg-hover focus-visible:border-fg disabled:hover:bg-elev'
+        }`}
       >
         <span className="size-2.5 shrink-0 rounded-full" style={{ background: current.color ?? 'var(--color-muted)' }} />
-        <span className="truncate">{current.label}</span>
+        <span className={`truncate ${compact ? 'max-w-36' : ''}`}>{current.label}</span>
         <ChevronDownIcon
           className={`ml-1 shrink-0 text-muted transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
         />

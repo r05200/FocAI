@@ -15,6 +15,8 @@ import type {
   PauseResult,
   Position,
   PrunerEvent,
+  Suggestion,
+  HumanAction,
   PromptInfo,
   PublicConfig,
   RegenerateLayoutRequest,
@@ -25,7 +27,6 @@ import type {
   StopResult,
   TreeNode,
   VaultGraph,
-  VaultItemView,
   VaultSummary,
 } from '../types'
 
@@ -47,7 +48,8 @@ export function isOffline(err: unknown) {
   return !(err instanceof ApiError) || (!err.fromBackend && (err.status === 404 || err.status >= 500))
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+// `as: 'text'` returns the body as it is (plain-text routes, e.g. the run's patch).
+async function request<T>(method: string, path: string, body?: unknown, as: 'json' | 'text' = 'json'): Promise<T> {
   const res = await fetch(`/api${path}`, {
     method,
     headers: body === undefined ? undefined : { 'content-type': 'application/json' },
@@ -73,26 +75,23 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   }
   if (res.status === 204) return undefined as T
   const text = await res.text()
+  if (as === 'text') return text as T
   return (text ? JSON.parse(text) : undefined) as T
 }
 
 const id = encodeURIComponent
 
 // ---- vault
-export const listPeople = () => request<string[]>('GET', '/vault/people')
 export const listVaults = () => request<VaultSummary[]>('GET', '/vault/vaults')
 // 201 -> VaultSummary; 409 if the person already has a vault.
 export const createVault = (body: CreateVaultRequest) => request<VaultSummary>('POST', '/vault/vaults', body)
 export const getVaultGraph = (person?: string) =>
   request<VaultGraph>('GET', `/vault/graph${person ? `?person=${id(person)}` : ''}`)
-export const getVaultItem = (itemId: string) => request<VaultItemView>('GET', `/vault/items/${id(itemId)}`)
 // 201 -> the new item plus its links; 502 if the vault LLM fails. `kind` can't be "directive".
 export const ingestItem = (body: IngestRequest) => request<IngestResult>('POST', '/vault/items', body)
 // 204. The Move tool: where a card now sits (404 if unknown).
 export const moveItem = (itemId: string, position: Position) =>
   request<void>('PATCH', `/vault/items/${id(itemId)}/position`, position)
-export const moveItems = (positions: (Position & { id: string })[]) =>
-  request<void>('PATCH', '/vault/positions', { positions })
 // Recompute every automatic position; moved cards keep their spot unless reset_moved.
 export const regenerateLayout = (body: RegenerateLayoutRequest = {}) =>
   request<VaultGraph>('POST', '/vault/layout/regenerate', body)
@@ -115,13 +114,14 @@ export const getRun = (runId: string) => request<RunSnapshot>('GET', `/runs/${id
 const RUN_EVENT_TYPES: PrunerEvent['type'][] = [
   'run_started', 'objectives_updated', 'node_created', 'node_updated', 'instruction_added',
   'vault_retrieved', 'vault_item_added', 'activity', 'question_asked', 'question_answered',
-  'run_completed', 'run_failed',
+  'run_updated', 'node_log', 'finding_added', 'idea_added', 'suggestions_ready',
+  'suggestion_resolved', 'node_removed', 'fork_updated', 'run_completed', 'run_failed',
 ]
 
 // GET /runs/{id}/events?after=<seq>: SSE, replays the run's events after `after`, then goes live.
 // Each event names its `type` as the SSE event name and carries full objects (replace by id).
 // `onError(opened)`: the stream closed; `opened` says whether it had connected at all (false = the
-// route isn't available, e.g. the backend's current 501 "not implemented", or the backend is down).
+// route isn't available, or the backend is down).
 // Returns a function that closes it.
 export function streamRunEvents(
   runId: string,
@@ -152,16 +152,45 @@ export function streamRunEvents(
 // 202 -> the recorded Instruction. `directives`, when given, replaces the run's directive list.
 export const addInstruction = (runId: string, body: InstructionRequest) =>
   request<Instruction>('POST', `/runs/${id(runId)}/instructions`, body)
+// 200 -> the Instruction: turn a steering chip on or off (off = left out of every prompt). 409 if the
+// run finished, its objectives aren't written yet, or it's the research spec.
+export const toggleInstruction = (runId: string, instructionId: string, active: boolean) =>
+  request<Instruction>('PATCH', `/runs/${id(runId)}/instructions/${id(instructionId)}`, { active })
 export const listForks = (runId: string) => request<ForkRequest[]>('GET', `/runs/${id(runId)}/forks`)
+// The fork card for F, or F moved to `at` (a node on the path, or below F): what it would park, the
+// keeps it overrides, the flagged nodes. Changes nothing. 409 if the run finished or `at` doesn't fit.
+export const previewFork = (runId: string, forkId: string, at?: string) =>
+  request<ForkRequest>('GET', `/runs/${id(runId)}/forks/${id(forkId)}/preview${at ? `?at=${id(at)}` : ''}`)
+// Fork: park everything off the root-to-F path (and under F), queue new hypotheses at F, leave the
+// run paused. `at` moves F; `keep_live` keeps flagged nodes live. 409 if it's no longer waiting.
+export const confirmFork = (runId: string, forkId: string, body: { at?: string | null; keep_live?: string[] }) =>
+  request<ForkRequest>('POST', `/runs/${id(runId)}/forks/${id(forkId)}/confirm`, body)
+// No fork: nothing is parked; the run carries on with the amended objectives.
+export const dismissFork = (runId: string, forkId: string) =>
+  request<ForkRequest>('POST', `/runs/${id(runId)}/forks/${id(forkId)}/dismiss`)
+// Put the tree back as it was before the fork. If nodes were created since, they're deleted, which
+// needs confirm_delete: without it the answer is 409 "Undo fork: this deletes N new node(s)...".
+export const undoFork = (runId: string, forkId: string, confirmDelete = false) =>
+  request<ForkRequest>('POST', `/runs/${id(runId)}/forks/${id(forkId)}/undo`, { confirm_delete: confirmDelete })
+
+// Where the run could continue from. Confirm acts on it ("run" runs that node next, "restore"
+// restores it, "expand"/"remeasure" propose from it); dismiss drops it. 409 if the run finished,
+// it was already answered, or it no longer fits.
+export const listSuggestions = (runId: string) => request<Suggestion[]>('GET', `/runs/${id(runId)}/suggestions`)
+export const confirmSuggestion = (runId: string, suggestionId: string) =>
+  request<Suggestion>('POST', `/runs/${id(runId)}/suggestions/${id(suggestionId)}/confirm`)
+export const dismissSuggestion = (runId: string, suggestionId: string) =>
+  request<Suggestion>('POST', `/runs/${id(runId)}/suggestions/${id(suggestionId)}/dismiss`)
+
+// The changes the run left applied to the user's files, as a unified diff (empty if nothing was
+// kept). 404 until the run has finished with files (Run.patch_ready).
+export const getPatch = (runId: string) => request<string>('GET', `/runs/${id(runId)}/patch`, undefined, 'text')
 // 202 -> cancels the run's in-flight LLM calls and ends it. 404 unknown run, 409 already finished.
 export const stopRun = (runId: string) => request<StopResult>('POST', `/runs/${id(runId)}/stop`)
 
-// PROPOSED ROUTES for the run vault (the agent's own discoveries for one run), not in the backend:
-//   POST /api/runs/{id}/vault -> 201 RunVault. Creates the run's (empty) vault and saves it to disk
-//     with the run (e.g. data/runs/<id>/vault.json). Idempotent: an existing vault comes back as is.
-//     The frontend calls it right after a run starts; the backend may equally create it inside
-//     start_run (then this just returns it).
-//   GET /api/runs/{id}/vault  -> RunVault (404 unknown run).
+// The run vault (the agent's own discoveries for one run). POST creates it (idempotent; runs the
+// backend starts already have one); GET returns it (404 unknown run). New entries also arrive as
+// idea_added events.
 export const createRunVault = (runId: string) => request<RunVault>('POST', `/runs/${id(runId)}/vault`)
 export const getRunVault = (runId: string) => request<RunVault>('GET', `/runs/${id(runId)}/vault`)
 
@@ -171,19 +200,36 @@ export const getRunVault = (runId: string) => request<RunVault>('GET', `/runs/${
 export const pauseRun = (runId: string) => request<PauseResult>('POST', `/runs/${id(runId)}/pause`)
 export const resumeRun = (runId: string) => request<PauseResult>('POST', `/runs/${id(runId)}/resume`)
 
-// POST /runs/{id}/nodes/{node_id}/park -> the updated Node: parks a branch by hand (restorable). The
-// route exists but still answers 501 "not implemented"; the same change arrives as node_updated.
-export const parkNode = (runId: string, nodeId: string) =>
-  request<TreeNode>('POST', `/runs/${id(runId)}/nodes/${id(nodeId)}/park`)
+// POST /api/runs/{id}/manual {manual} -> the Run. On: before each experiment the run waits for a
+// person to choose which proposed hypothesis to pursue (the waiting nodes get awaiting_choice, the
+// run awaiting "choice"); keep a waiting hypothesis to run it next, park the ones to drop. Off: the
+// agent chooses again, at once if it was waiting. 404 unknown run, 409 already finished.
+export const setManualMode = (runId: string, manual: boolean) =>
+  request<Run>('POST', `/runs/${id(runId)}/manual`, { manual })
 
-// PROPOSED ROUTE, not in the backend yet: GET /api/runs/{id}/nodes/{node_id}/logs -> LogEntry[],
-// oldest first: the node's reasoning steps, every tool call with its arguments and result, and its
-// scoring decisions. The agent has no tool loop yet (backend/pruner/agent/tools.py), so today a
-// backend could only log the plan and the answer.
+// A person's action on a node -> the updated Node (the change also arrives as node_updated).
+//   keep: force it to stay (a parked one comes back; a waiting one moves up the queue).
+//   park: park it by hand (restorable); on a running node it applies once its step finishes.
+//   restore: bring a parked branch back (409 if it isn't parked).
+// 404 unknown run or node; 409 if the run finished or the action doesn't fit (the baseline, a
+// failed node, the conclusion).
+export const nodeAction = (runId: string, nodeId: string, action: HumanAction) =>
+  request<TreeNode>('POST', `/runs/${id(runId)}/nodes/${id(nodeId)}/${action}`)
+
+// PROPOSED ROUTE, not in the backend yet: POST /api/runs/{id}/nodes/{node_id}/conclude -> the new
+// conclusion Node (type "conclusion", a child of node_id). Ends the run's exploration at this node:
+// everything under it is dropped and the conclusion is written from the path to it. The frontend
+// draws the conclusion straight away and treats 404 / 405 / 501 (not built yet) as "kept locally".
+// 404 unknown run or node, 409 if the run finished or the node can't conclude (the root, a parked
+// or failed node, a conclusion).
+export const concludeNode = (runId: string, nodeId: string) =>
+  request<TreeNode>('POST', `/runs/${id(runId)}/nodes/${id(nodeId)}/conclude`)
+
+// GET /api/runs/{id}/nodes/{node_id}/logs -> LogEntry[], oldest first: the agent's tool calls (each
+// with its reason) and results, decisions and errors. New lines also arrive as node_log events.
 export const getNodeLogs = (runId: string, nodeId: string) =>
   request<LogEntry[]>('GET', `/runs/${id(runId)}/nodes/${id(nodeId)}/logs`)
 
 // ---- meta
 export const getConfig = () => request<PublicConfig>('GET', '/config')
 export const listPrompts = () => request<PromptInfo[]>('GET', '/prompts')
-export const getPrompt = (name: string) => request<PromptInfo>('GET', `/prompts/${id(name)}`)

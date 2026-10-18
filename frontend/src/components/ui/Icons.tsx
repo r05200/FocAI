@@ -64,14 +64,6 @@ export function ArrowRightIcon(props: SVGProps<SVGSVGElement>) {
   )
 }
 
-export function ArrowUpIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <Svg strokeWidth={2.2} {...props}>
-      <path d="M12 19V5M5 12l7-7 7 7" />
-    </Svg>
-  )
-}
-
 export function CloseIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <Svg width={14} height={14} strokeWidth={2.2} {...props}>
@@ -201,19 +193,6 @@ export function CheckIcon(props: SVGProps<SVGSVGElement>) {
 
 // A vault (hub with satellites) with a small plus: "add a vault", distinct from the plain + that
 // adds knowledge to the current one.
-export function AddVaultIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <Svg width={18} height={18} {...props}>
-      <circle cx="10" cy="11" r="2.2" />
-      <circle cx="4.5" cy="5" r="1.7" />
-      <circle cx="15" cy="5" r="1.7" />
-      <circle cx="5" cy="18" r="1.7" />
-      <path d="M8.6 9.4 5.6 6.5M11.5 9.6l2.4-3M8.7 12.7l-2.7 3.9" />
-      <path d="M18 14v6M15 17h6" />
-    </Svg>
-  )
-}
-
 export function MoveIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <Svg width={16} height={16} {...props}>

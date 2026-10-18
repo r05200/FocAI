@@ -28,7 +28,7 @@ class DirectiveStore:
 
     def _save(self) -> None:
         write_atomic(self._path, json.dumps(
-            [d.model_dump(mode="json") for d in self._directives.values()], indent=1))
+            [d.model_dump(mode="json") for d in self._directives.values()], separators=(",", ":")))
 
     def add(self, req: DirectiveRequest) -> Directive:
         directive = Directive(person=req.person, text=req.text.strip())

@@ -10,7 +10,7 @@ export type VaultKind =
   | 'learned'
   | 'directive'
 export type VaultRelation = 'contradicts' | 'supports' | 'agrees' | 'investigate'
-export type NodeType = 'hypothesis' | 'experiment' | 'reading'
+export type NodeType = 'hypothesis' | 'experiment' | 'reading' | 'conclusion' // conclusion: the run's answer
 export type NodeStatus = 'pending' | 'running' | 'done' | 'parked' | 'failed'
 export type Verdict = 'keep' | 'park'
 export type DecisionStage = 'pre' | 'post' | 'human'
@@ -131,12 +131,93 @@ export interface TreeNode {
   usefulness_count: number
   person_scores: Record<string, PersonScore>
   created_at: number
+  // --- the orchestrator's fields (optional: older snapshots don't have them)
+  family?: string | null
+  // Where the node is in its cycle: proposed, its experiment running, being judged, finished.
+  phase?: NodePhase
+  summary?: string // one line about this node (used in later prompts)
+  hypothesis?: HypothesisSpec | null // the whole proposal (description is only its short title)
+  edit?: Edit | null
+  base_version?: string | null
+  version?: string | null
+  combines?: string[] // other nodes merged in (combine); for the conclusion, every judged node
+  experiment?: ExperimentRun | null
+  synthesis?: Synthesis | null
+  verdict?: HypothesisVerdict | null
+  pre_band?: PreBand | null // how to show the pre-score
+  closed?: boolean // the agent chose "stop" here: no more children
+  priority?: number | null
+  // The latest steering re-rate: how relevant this node is to what's asked now (0..1), and why.
+  directive_score?: number | null
+  directive_reason?: string
+  needs_remeasure?: boolean
+  missing_metrics?: string[]
+  // A person's keep/park/restore on a running node, applied once its step has finished.
+  pending_action?: HumanAction | null
+  // Manual mode: this node's proposals are ready and the run waits for a person to choose which to
+  // pursue (keep one to run it next, park the ones to drop). Shown with a yellow ring.
+  awaiting_choice?: boolean
+  // A revert option: go back to this earlier node's code (the step since went the wrong way) and try
+  // something else from there. No experiment runs for it. Shown as "Revert to <id>".
+  revert_to?: string | null
+  tool_calls?: Record<string, number> // calls used, per phase
+}
+
+export type NodePhase = 'hypothesis' | 'experiment' | 'synthesis' | 'complete'
+export type HypothesisVerdict = 'supported' | 'refuted' | 'inconclusive'
+export type PreBand = 'low' | 'medium' | 'high'
+export type HumanAction = 'keep' | 'park' | 'restore'
+export type NextAction = 'more_experiments' | 'new_hypothesis' | 'diagnose' | 'combine' | 'resolve' | 'transfer' | 'revert' | 'stop'
+// How a step moved things compared with the previous round.
+export type Direction = 'better' | 'worse' | 'same' | 'unclear'
+
+export interface HypothesisSpec {
+  statement: string
+  rationale: string
+  family: string
+  planned_experiment: string
+  expected_signal: string
+  measures: string[]
+  queries: string[] // research runs: the searches its experiment runs
+}
+
+export interface Edit {
+  edits: { path: string; find: string; replace: string; replace_all: boolean }[]
+  new_files: { path: string; content: string }[]
+  stats: { files: number; added: number; removed: number } | null
+}
+
+export interface ExperimentRun {
+  command: string
+  exit_code: number | null
+  timed_out: boolean
+  duration_s: number
+  stdout_tail: string
+  stderr_tail: string
+  result: Record<string, unknown> | null
+  metrics: Record<string, number>
+  error: string | null
+  cached: boolean
+}
+
+export interface Synthesis {
+  measured: string
+  explanation: string
+  verdict: HypothesisVerdict
+  confidence: number
+  finding: string
+  direction?: Direction // vs the previous round: was this step the right way?
+  next_action: NextAction
+  next_reason: string
+  action_targets: string[]
+  action_brief: string
 }
 
 export interface Caps {
   max_depth: number
   branching: number
   node_budget: number
+  tool_calls_per_phase?: number
 }
 
 export interface RunTotals {
@@ -144,6 +225,7 @@ export interface RunTotals {
   nodes_total: number
   nodes_parked: number
   nodes_restored: number
+  experiments_run?: number
   elapsed_s: number
 }
 
@@ -153,6 +235,9 @@ export interface Instruction {
   id: string
   kind: InstructionKind
   text: string
+  // Steering instructions show as chips that can be turned off (PATCH .../instructions/{id}); an
+  // inactive one is left out of every prompt. The spec is always active.
+  active?: boolean
   created_at: number
 }
 
@@ -167,16 +252,24 @@ export interface Run {
   vault_people: string[] // whose vaults the scorers search
   mode: RunMode
   status: RunStatus
-  // PROPOSED (not sent by the backend yet): why a finished run ended, so the UI doesn't have to
-  // guess from status "failed" (which today means stopped by the user, or crashed): "stopped" (the
-  // user), "limit" (node budget, depth or any other cap reached), "error" (a real failure, with the
-  // message in `error`). The UI uses it when present.
+  // Why a finished run ended: "stopped" (the user), "limit" (a cap reached), "error" (a real
+  // failure, with the message in `error`). Older runs don't have it.
   end_reason?: 'stopped' | 'limit' | 'error'
   error?: string
   // True while the run is paused: its agent takes no further step until resumed. Not a status (the
   // run is still "running"); cleared when the run ends or is stopped.
   paused: boolean
   caps: Caps
+  paths?: string[] // the user's files or folders (server paths)
+  // The run waits for a person: to answer the command question, or (manual mode) to choose which
+  // proposed hypothesis to pursue next.
+  // "fork": a fork is suggested and nothing new runs until a person confirms or dismisses it (fork_id).
+  awaiting?: 'command' | 'choice' | 'fork' | null
+  fork_id?: string | null
+  // Manual mode (POST /runs/{id}/manual): before each experiment the run waits for a person's choice.
+  manual?: boolean
+  best_node_id?: string | null // the node whose code is left applied at the end
+  patch_ready?: boolean // GET /runs/{id}/patch has the final changes
   final_answer: string | null
   totals: RunTotals
   created_at: number
@@ -190,14 +283,49 @@ export interface DeadEnd {
   reason: string
 }
 
+// A question the run asks: the experiment command when none was given ("command"), or a
+// targeted one ("clarify"). GET /runs/{id}/questions; POST .../questions/{qid}/answer.
 export interface Question {
   id: string
   run_id: string
-  node_id: string
+  node_id: string | null
   person: string
   text: string
+  purpose?: 'command' | 'clarify'
   status: 'pending' | 'answered'
   answer: string | null
+  created_at: number
+}
+
+// One line in the run's shared findings log.
+export interface Finding {
+  id: string
+  run_id: string
+  node_id: string | null
+  family: string | null
+  verdict: HypothesisVerdict
+  text: string
+  evidence_node_ids: string[]
+  metrics: Record<string, number>
+  source: 'orchestrator' | 'agent_tool'
+  reason: string
+  created_at: number
+}
+
+// Where the run could continue from, offered after a steering re-rate or a fork request.
+// GET /runs/{id}/suggestions; POST .../suggestions/{sid}/confirm | dismiss.
+export interface Suggestion {
+  id: string
+  run_id: string
+  node_id: string
+  action: 'run' | 'expand' | 'restore' | 'remeasure' | 'fork'
+  reason: string
+  family: string | null
+  score: number
+  source: 'steer' | 'fork'
+  instruction_id: string | null
+  fork_id?: string | null // action "fork": the fork it confirms or dismisses
+  status: 'open' | 'confirmed' | 'dismissed' | 'replaced'
   created_at: number
 }
 
@@ -206,6 +334,8 @@ export interface RunSnapshot {
   nodes: TreeNode[]
   dead_ends: DeadEnd[]
   questions: Question[]
+  findings?: Finding[]
+  suggestions?: Suggestion[]
 }
 
 // ---- API requests
@@ -220,6 +350,10 @@ export interface StartRunRequest {
   vault_people?: string[] | null
   // Directive texts (not ids), appended to the prompts as-is.
   directives?: string[]
+  // Absolute paths of files (or folders) on the backend's machine the run works on; the backend
+  // rejects relative or missing ones (422). They are edited in place.
+  paths?: string[]
+  manual?: boolean // start in manual mode
 }
 
 export interface InstructionRequest {
@@ -233,6 +367,7 @@ export interface IngestRequest {
   kind?: Exclude<VaultKind, 'directive'> // directives use DirectiveRequest instead
   text: string
   title?: string | null
+  tags?: string[] // topic tags (normalized to lowercase-hyphenated, at most 5)
 }
 
 // POST /api/vault/vaults: create an empty vault so the person shows up before any item exists.
@@ -244,14 +379,6 @@ export interface CreateVaultRequest {
 export interface VaultSummary {
   person: string
   item_count: number
-}
-
-// PATCH /api/vault/items/{id}/position -> 204. The Move tool: where a card now sits.
-export type MoveItemRequest = Position
-
-// PATCH /api/vault/positions -> 204: several moves at once; an unknown id rejects all (404).
-export interface MoveItemsRequest {
-  positions: (Position & { id: string })[]
 }
 
 // POST /api/vault/layout/regenerate -> VaultGraph. Recomputes every automatic position; manual
@@ -271,10 +398,6 @@ export interface IngestResult {
   edges: VaultEdge[]
 }
 
-export interface AnswerRequest {
-  answer: string
-}
-
 // ---- SSE events (the `type` field is also the SSE event name)
 
 interface EventBase {
@@ -283,7 +406,8 @@ interface EventBase {
   ts: number
 }
 
-export type NodeChange = 'running' | 'scored' | 'done' | 'parked' | 'kept' | 'restored' | 'failed'
+// awaiting: the node's awaiting_choice flag flipped (either way).
+export type NodeChange = 'running' | 'scored' | 'done' | 'parked' | 'kept' | 'restored' | 'failed' | 'awaiting'
 
 export type PrunerEvent =
   | (EventBase & { type: 'run_started'; run: Run })
@@ -304,19 +428,50 @@ export type PrunerEvent =
   | (EventBase & { type: 'activity'; message: string; node_id: string | null })
   | (EventBase & { type: 'question_asked'; question: Question })
   | (EventBase & { type: 'question_answered'; question: Question })
+  // Run-level state changed (awaiting an answer, instructions toggled...): the whole run.
+  | (EventBase & { type: 'run_updated'; run: Run })
+  | (EventBase & { type: 'node_log'; node_id: string; entry: LogEntry })
+  | (EventBase & { type: 'finding_added'; finding: Finding })
+  | (EventBase & { type: 'idea_added'; idea: RunIdea })
+  // A new open set; `replaced` are the ids of the earlier open ones.
+  | (EventBase & { type: 'suggestions_ready'; suggestions: Suggestion[]; replaced: string[] })
+  | (EventBase & { type: 'suggestion_resolved'; suggestion: Suggestion })
+  // A node no longer exists (undoing a fork deletes the nodes created after it).
+  | (EventBase & { type: 'node_removed'; node_id: string })
+  | (EventBase & { type: 'fork_updated'; fork: ForkRequest })
   | (EventBase & { type: 'run_completed'; run: Run })
   | (EventBase & { type: 'run_failed'; error: string })
 
 // ---- other finished routes
 
-// GET /api/runs/{id}/forks: where the amend agent asked to restart exploration (forking itself is not built).
+// One node on a fork card: where it is and how relevant it is to the amended objectives.
+export interface ForkStep {
+  node_id: string
+  description: string
+  depth: number
+  score: number | null // the steering re-rate's relevance, 0..1 (shown as 0..10)
+}
+
+// GET /api/runs/{id}/forks: after the objectives are amended, the amend agent suggests restarting
+// from the node F (node_id) the new objectives still fit. Nothing changes until a person confirms:
+// then every live node off the root-to-F path (and F's descendants) is parked, new hypotheses grow
+// from F, and undo restores the tree as it was (see FORK_PLAN.md). Older requests have only the
+// first fields.
 export interface ForkRequest {
   id: string
   run_id: string
-  node_id: string
+  node_id: string // F
   reason: string
   objective_ids: string[]
-  status: 'requested'
+  status: 'requested' | 'confirmed' | 'dismissed' | 'replaced' | 'undone'
+  path?: ForkStep[] // root .. F, with scores
+  below?: ForkStep[] // deeper choices for F
+  park_ids?: string[] // parked on confirm
+  kept_overridden?: number // how many of them a person had kept (the keep is cleared)
+  flagged_ids?: string[] // off-path but relevant: "park anyway", untickable
+  web_search?: boolean // the new hypotheses can search the web (a provider is set up)
+  suggestion_id?: string | null
+  confirmed_at_node?: string | null // where it was confirmed (a person may move F)
   created_at: number
 }
 
@@ -344,6 +499,13 @@ export interface PromptInfo {
 export interface PublicConfig {
   fast_model: string
   strong_model: string
+  agent_hypothesis_model?: string
+  agent_synthesis_model?: string
+  tool_calls_per_phase?: number
+  write_tool_calls_per_phase?: number
+  branch_finding_min_confidence?: number
+  experiment_timeout_s?: number
+  experiment_cache?: boolean
   vault_model: string
   embedding_model: string
   max_depth: number
@@ -356,15 +518,20 @@ export interface PublicConfig {
   backtrack_below: number
 }
 
-// ---- per-run vault (PROPOSED: the backend has no run vault yet)
+// ---- per-run vault (GET | POST /api/runs/{id}/vault)
 
 // One thing the agent came up with or found while exploring, filed under the branch (tree path) it
-// came from. Not a vault item: no owner, no embedding, no links.
+// came from. Not a vault item: no owner, no embedding, no links. `branch_finding`: a whole-branch
+// conclusion the agent wrote once it was fairly sure.
 export interface RunIdea {
   id: string
   branch: string
   title: string
   summary: string
+  kind?: 'idea' | 'branch_finding'
+  confidence?: number | null
+  node_ids?: string[]
+  created_at?: number
 }
 
 // The agent's own discoveries for one run. Stored on disk with the run, e.g.
@@ -374,7 +541,7 @@ export interface RunVault {
   ideas: RunIdea[]
 }
 
-// ---- node logs (PROPOSED: the backend doesn't record per-step logs yet)
+// ---- node logs (GET /api/runs/{id}/nodes/{node_id}/logs; live as node_log events)
 
 // One entry in a node's log: a reasoning step, a tool call or its result, a scoring decision...
 export type LogKind = 'thought' | 'tool_call' | 'tool_result' | 'decision' | 'activity' | 'error'
@@ -387,4 +554,5 @@ export interface LogEntry {
   text: string // the detail: the reasoning, the tool's result, the reason for a decision
   tool?: string | null // tool_call / tool_result only
   args?: Record<string, unknown> | null // tool_call only
+  phase?: string | null
 }

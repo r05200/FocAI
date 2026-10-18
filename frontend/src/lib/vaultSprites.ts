@@ -20,7 +20,7 @@ function truncateToWidth(ctx: CanvasRenderingContext2D, text: string, max: numbe
 // `accent` tints the stripe and, faintly, the border.
 function drawCard(ctx: CanvasRenderingContext2D, label: string, sub: string, p: Palette, accent: string, selected: boolean) {
   ctx.beginPath()
-  ctx.roundRect(1, 1, CARD_W - 2, CARD_H - 2, 7)
+  ctx.roundRect(1, 1, CARD_W - 2, CARD_H - 2, CORNER)
   ctx.fillStyle = p.elev
   ctx.fill()
   ctx.lineWidth = selected ? 1.6 : 1
@@ -43,6 +43,40 @@ function drawCard(ctx: CanvasRenderingContext2D, label: string, sub: string, p: 
   ctx.fillText(truncateToWidth(ctx, sub, CARD_W - 28), 17, 26)
 }
 
+const CORNER = 7
+
+// The card's border as one path that starts and ends at the middle of the top edge, going
+// clockwise, plus its length (so a stretch of it can be picked out with a dash).
+function borderPath(ctx: CanvasRenderingContext2D): number {
+  const x = 1, y = 1, w = CARD_W - 2, h = CARD_H - 2, r = CORNER
+  ctx.beginPath()
+  ctx.moveTo(x + w / 2, y)
+  ctx.arcTo(x + w, y, x + w, y + h, r)
+  ctx.arcTo(x + w, y + h, x, y + h, r)
+  ctx.arcTo(x, y + h, x, y, r)
+  ctx.arcTo(x, y, x + w, y, r)
+  ctx.closePath()
+  return 2 * (w - 2 * r) + 2 * (h - 2 * r) + 2 * Math.PI * r
+}
+
+// Black over the stretch of border from `from` to `to` (fractions of the way round, clockwise from
+// the middle of the top edge).
+function drawBlackStretch(ctx: CanvasRenderingContext2D, from: number, to: number, selected: boolean) {
+  if (to <= from) return
+  const length = borderPath(ctx)
+  ctx.save()
+  ctx.setLineDash([(to - from) * length, length * 2])
+  ctx.lineDashOffset = -from * length
+  ctx.lineWidth = (selected ? 1.6 : 1) + 0.6 // a touch wider, so no colour shows at the edges
+  ctx.strokeStyle = '#000'
+  ctx.stroke()
+  ctx.restore()
+}
+
+// The black-border animation hook a card sprite carries (sprite.userData.blackBorder): redraws the
+// card with black over the stretch [from, to] of its border; (0, 0) puts it back as it was.
+export type BlackBorder = (from: number, to: number) => void
+
 // `sub` is the small grey second line; `accent` the stripe colour (owner or branch).
 export function makeCardSprite(label: string, sub: string, palette: Palette, accent: string, selected: boolean): Sprite {
   const canvas = document.createElement('canvas')
@@ -63,5 +97,12 @@ export function makeCardSprite(label: string, sub: string, palette: Palette, acc
   )
   sprite.renderOrder = selected ? 21 : 20
   sprite.scale.set(CARD_W, CARD_H, 1)
+  const blackBorder: BlackBorder = (from, to) => {
+    ctx.clearRect(0, 0, CARD_W, CARD_H)
+    drawCard(ctx, label, sub, palette, accent, selected)
+    drawBlackStretch(ctx, from, to, selected)
+    texture.needsUpdate = true
+  }
+  sprite.userData.blackBorder = blackBorder
   return sprite
 }

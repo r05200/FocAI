@@ -29,10 +29,13 @@ export default function NodeLogsPanel({ open, node, entries, source, onClose }: 
       aria-label="Node logs"
       aria-hidden={!open}
       inert={!open}
-      className={`absolute inset-y-0 right-0 z-30 flex w-[min(400px,100%)] flex-col border-l border-line bg-sidebar shadow-2xl shadow-black/30 transition-transform duration-300 ease-zoom ${
-        open ? 'translate-x-0' : 'translate-x-full'
+      // A flex sibling of the tree: opening it narrows the tree rather than covering it (and the
+      // node's card with it).
+      className={`shrink-0 overflow-hidden border-line bg-sidebar transition-[width] duration-300 ease-zoom ${
+        open ? 'w-100 border-l' : 'w-0'
       }`}
     >
+      <div className="flex h-full w-100 flex-col">
       <header className="flex items-start justify-between gap-3 px-4 pt-4 pb-3">
         <div className="min-w-0">
           <h2 className="font-semibold">Logs</h2>
@@ -63,10 +66,10 @@ export default function NodeLogsPanel({ open, node, entries, source, onClose }: 
         )}
         {entries.map((e) => (
           <li key={e.id} className="relative border-l border-line pb-4 pl-4 last:pb-0">
-            <span className={`absolute top-1.5 -left-[4.5px] size-2 rounded-full ${KIND[e.kind].dot}`} />
+            <span className={`absolute top-1.5 -left-[4.5px] size-2 rounded-full ${(KIND[e.kind] ?? KIND.activity).dot}`} />
             <p className="flex items-baseline justify-between gap-2 text-xs text-muted">
               <span>
-                {KIND[e.kind].label}
+                {(KIND[e.kind] ?? KIND.activity).label}
                 {e.tool && <span className="font-mono"> · {e.tool}</span>}
               </span>
               <span className="shrink-0">{time(e.ts)}</span>
@@ -89,6 +92,7 @@ export default function NodeLogsPanel({ open, node, entries, source, onClose }: 
           </li>
         ))}
       </ol>
+      </div>
     </aside>
   )
 }

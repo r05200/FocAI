@@ -29,6 +29,8 @@ const TEXT_LIMIT: Record<Exclude<AddableKind, 'paper'>, number> = {
   directive: 500,
 }
 const LINK_LIMIT = 2000
+// Text read from a paper's attached file is kept up to this long.
+const PAPER_TEXT_LIMIT = 20000
 const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
 
 interface Errors {
@@ -121,7 +123,8 @@ function AddDialog({ author, onClose }: { author: string; onClose: () => void })
       if (!url && !file) next.paper = 'Add a link or attach a file.'
       else if (url && !isUrl(url)) next.link = 'Enter a valid link starting with http:// or https://.'
       else if (url.length > LINK_LIMIT) next.link = `That link is too long (over ${LINK_LIMIT.toLocaleString()} characters).`
-      else if (url && graph.nodes.some((n) => n.kind === 'paper' && same(n.source_text, url))) {
+      // A read link is stored as "<link>\n\n<page text>": compare its first line.
+      else if (url && graph.nodes.some((n) => n.kind === 'paper' && same(n.source_text.split('\n')[0] ?? '', url))) {
         next.link = 'That link is already in this vault.'
       } else if (!url && file && graph.nodes.some((n) => n.kind === 'paper' && same(n.title, file.name))) {
         next.file = `“${file.name}” is already in this vault.`
@@ -155,15 +158,21 @@ function AddDialog({ author, onClose }: { author: string; onClose: () => void })
         setDirectivesOpen(true)
       } else if (kind === 'paper') {
         // POST /vault/items takes text only, so a paper is sent as its link plus whatever text can
-        // be read from the file here. FIXME: PDFs/Word files can't be read in the browser; the
-        // backend should fetch the link and extract file text itself.
-        const fileText = file && /\.(txt|md|markdown|csv|json|tex|html)$/i.test(file.name) ? await file.text() : ''
-        const text = [url, fileText || (file ? `(attached file: ${file.name})` : '')].filter(Boolean).join('\n\n')
+        // be read from the file here. The backend fetches a bare link and reads its abstract (an
+        // unreadable page is filed with "No summary found."). FIXME: PDFs/Word files can't be read
+        // in the browser, so an attached one only sends its name.
+        const raw = file && /\.(txt|md|markdown|csv|json|tex|html)$/i.test(file.name) ? await file.text() : ''
+        // Capped like a note would be: the whole text is stored and sent back with every graph.
+        const fileText = raw.trim().slice(0, PAPER_TEXT_LIMIT)
+        // A bare link is fetched and its abstract read by the backend, which it only does when the
+        // text is nothing but the link: an unreadable file's name would stop that, so it's left out.
+        const text = url ? [url, fileText].filter(Boolean).join('\n\n') : fileText || `(attached file: ${file!.name})`
         await ingest({
           person: author,
           kind,
           text,
-          title: file?.name ?? new URL(url).hostname.replace(/^www\./, ''),
+          // A bare link gets its title from the page (the backend fetches it); a file keeps its name.
+          title: file?.name,
         })
       } else {
         // POST /vault/items: the vault LLM writes the title, summary and tags and links it up.

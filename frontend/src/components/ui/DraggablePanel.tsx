@@ -7,18 +7,20 @@ interface Props {
   onClose: () => void
   children: ReactNode
   'aria-label': string
-  // Extra room to leave on the right while in the default spot (e.g. for a sidebar), in px.
-  rightInset?: number
+  // Distance from the top of the area in the default spot, in px.
+  top?: number
 }
 
-// Floating card the user can drag by its header (the little grip pill signals that). Positions
+// Floating card the user can drag by its header (the little grip pill signals that). It's as wide as
+// its text needs, between 260 and 380px, and long words wrap instead of spilling out. Positions
 // are relative to the nearest positioned ancestor and clamped inside it. Once moved, the spot
 // sticks for as long as this component stays mounted.
-export default function DraggablePanel({ label, onClose, children, 'aria-label': ariaLabel, rightInset = 0 }: Props) {
+export default function DraggablePanel({ label, onClose, children, 'aria-label': ariaLabel, top = 64 }: Props) {
   const panel = useRef<HTMLElement>(null)
   const drag = useRef<{ dx: number; dy: number; maxX: number; maxY: number } | null>(null)
-  // null = default spot (top right).
-  const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
+  // null = default spot (top right). w / h: the card's size, so it can be kept inside the area if
+  // the area later narrows (e.g. a sidebar opens).
+  const [pos, setPos] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
 
   function onDragStart(e: PointerEvent<HTMLDivElement>) {
     const el = panel.current
@@ -36,9 +38,12 @@ export default function DraggablePanel({ label, onClose, children, 'aria-label':
   function onDragMove(e: PointerEvent<HTMLDivElement>) {
     const d = drag.current
     if (!d) return
+    const el = panel.current
     setPos({
       x: Math.min(Math.max(e.clientX - d.dx, 0), Math.max(d.maxX, 0)),
       y: Math.min(Math.max(e.clientY - d.dy, 0), Math.max(d.maxY, 0)),
+      w: el?.offsetWidth ?? 0,
+      h: el?.offsetHeight ?? 0,
     })
   }
 
@@ -46,9 +51,13 @@ export default function DraggablePanel({ label, onClose, children, 'aria-label':
     <aside
       ref={panel}
       aria-label={ariaLabel}
-      style={pos ? { left: pos.x, top: pos.y } : { right: 20 + rightInset }}
-      className={`absolute z-20 flex max-h-[calc(100%-90px)] w-[min(300px,calc(100%-32px))] flex-col overflow-hidden rounded-xl border border-line bg-elev text-sm shadow-xl shadow-black/30 ${
-        pos ? '' : 'top-16 transition-[right] duration-300 ease-zoom'
+      style={
+        pos
+          ? { left: `max(0px, min(${pos.x}px, 100% - ${pos.w}px))`, top: `max(0px, min(${pos.y}px, 100% - ${pos.h}px))` }
+          : { right: 20, top }
+      }
+      className={`absolute z-20 flex max-h-[calc(100%-90px)] w-max max-w-[min(380px,calc(100%-32px))] min-w-65 flex-col overflow-hidden rounded-xl border border-line bg-elev text-sm shadow-xl shadow-black/30 ${
+        pos ? '' : 'transition-[top] duration-300 ease-zoom'
       }`}
     >
       <div
@@ -68,7 +77,7 @@ export default function DraggablePanel({ label, onClose, children, 'aria-label':
           </button>
         </div>
       </div>
-      <div className="overflow-auto px-4 pb-3.5">{children}</div>
+      <div className="overflow-auto px-4 pb-3.5 [overflow-wrap:anywhere]">{children}</div>
     </aside>
   )
 }

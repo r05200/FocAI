@@ -5,9 +5,9 @@
 //     wasteful when the backend can read the disk; probably needs a backend folder-browse route;
 //   - POST /api/runs doesn't accept attachments yet.
 
-export type AttachKind = 'file' | 'image' | 'folder'
+type AttachKind = 'file' | 'image' | 'folder'
 
-export interface Attachment {
+interface Attachment {
   id: string
   kind: AttachKind
   name: string
@@ -17,15 +17,15 @@ export interface Attachment {
 
 const MB = 1024 * 1024
 
-export const LIMITS = {
+const LIMITS = {
   file: { maxBytes: 20 * MB },
   image: { maxBytes: 10 * MB },
   maxAttachments: 10,
 }
 
 // FLAG (ignore unless asked): accepts PDF/Word/etc., but backend ingest takes text only (PRD: no PDF parsing).
-export const DOC_EXTENSIONS = ['pdf', 'txt', 'md', 'markdown', 'doc', 'docx', 'csv', 'json', 'tex', 'html', 'rtf']
-export const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg']
+const DOC_EXTENSIONS = ['pdf', 'txt', 'md', 'markdown', 'doc', 'docx', 'csv', 'json', 'tex', 'html', 'rtf']
+const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg']
 
 // `accept` attribute for each picker (folders can't be filtered by the browser).
 export const ACCEPT: Record<Exclude<AttachKind, 'folder'>, string> = {
@@ -38,7 +38,7 @@ function ext(name: string) {
   return i > 0 ? name.slice(i + 1).toLowerCase() : ''
 }
 
-export function formatBytes(n: number) {
+function formatBytes(n: number) {
   if (n < 1024) return `${n} B`
   if (n < MB) return `${Math.round(n / 1024)} KB`
   return `${(n / MB).toFixed(n < 10 * MB ? 1 : 0)} MB`

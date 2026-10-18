@@ -66,6 +66,10 @@ interface VaultState {
   setAddKind: (kind: AddableKind) => void
   directivesOpen: boolean
   setDirectivesOpen: (open: boolean) => void
+  // Ask the vault map to play a card's signal (border turns black, a line shoots up, then the
+  // colour comes back), e.g. when the agent draws on it. `nonce` makes each request new.
+  cardSignal: { nodeId: string; color: string; nonce: number } | null
+  signalCard: (nodeId: string, color: string) => void
 }
 
 const EMPTY: Remote = { status: 'loading', vaults: [], graph: { nodes: [], edges: [] }, directives: [] }
@@ -77,6 +81,12 @@ const withPeople = (order: string[], names: string[]) => [
   ...order,
   ...[...new Set(names)].filter((n) => !order.includes(n)).sort(),
 ]
+
+// Writes made while the first load is still on its way wait for it, so they go to the backend
+// when it's up instead of being kept locally (and then hidden once it answers).
+async function settled(get: () => VaultState) {
+  if (get().remote.status === 'loading') await get().loadRemote()
+}
 
 export const useVaultStore = create<VaultState>()((set, get) => ({
   person: null,
@@ -92,23 +102,42 @@ export const useVaultStore = create<VaultState>()((set, get) => ({
   hiddenSampleDirectives: [],
 
   loadRemote: async () => {
-    try {
-      const [vaults, graph, directives] = await Promise.all([
-        api.listVaults(),
-        api.getVaultGraph(),
-        api.listDirectives(),
-      ])
-      set((s) => ({
-        remote: { status: 'ok', vaults, graph, directives },
-        peopleOrder: withPeople(s.peopleOrder, vaults.map((v) => v.person)),
-      }))
-    } catch (err) {
-      if (!isOffline(err)) console.warn('Could not load the vault:', err)
+    const [vaults, graph, directives] = await Promise.allSettled([
+      api.listVaults(),
+      api.getVaultGraph(),
+      api.listDirectives(),
+    ])
+    const failed = [vaults, graph, directives].filter((r) => r.status === 'rejected').map((r) => r.reason)
+    // Only an unreachable backend means offline (local-only writes). A real backend error on one
+    // of the three is reported, and the rest still used: the backend is up, so writes go to it.
+    if (failed.some((err) => isOffline(err))) {
       set((s) => ({ remote: { ...s.remote, status: 'offline' } }))
+      return
     }
+    for (const err of failed) console.warn('Could not load part of the vault:', err)
+    set((s) => {
+      const nextVaults = vaults.status === 'fulfilled' ? vaults.value : s.remote.vaults
+      const nextGraph = graph.status === 'fulfilled' ? graph.value : s.remote.graph
+      const nextDirectives = directives.status === 'fulfilled' ? directives.value : s.remote.directives
+      const same = <T,>(a: T, b: T) => JSON.stringify(a) === JSON.stringify(b)
+      const names = nextVaults.map((v) => v.person)
+      return {
+        remote: {
+          status: 'ok',
+          // Unchanged parts keep their object, so a refresh with nothing new doesn't rebuild the map.
+          vaults: same(nextVaults, s.remote.vaults) ? s.remote.vaults : nextVaults,
+          graph: same(nextGraph, s.remote.graph) ? s.remote.graph : nextGraph,
+          directives: same(nextDirectives, s.remote.directives) ? s.remote.directives : nextDirectives,
+        },
+        peopleOrder: withPeople(s.peopleOrder, names),
+        // The vault on screen may not exist on the backend (made while offline): back to the team.
+        person: s.person && !SAMPLE_PEOPLE.includes(s.person) && !names.includes(s.person) ? null : s.person,
+      }
+    })
   },
 
   createVault: async (name) => {
+    await settled(get)
     if (get().remote.status !== 'ok') {
       set((s) => ({ addedPeople: [...s.addedPeople, name], peopleOrder: withPeople(s.peopleOrder, [name]) }))
       return
@@ -122,18 +151,24 @@ export const useVaultStore = create<VaultState>()((set, get) => ({
   },
 
   ingest: async (req) => {
+    await settled(get)
     if (get().remote.status !== 'ok') return localIngest(req, set)
     const { item, edges } = await api.ingestItem(req) // 502 if the vault LLM fails: left for the dialog
     set((s) => ({
       remote: {
         ...s.remote,
         graph: { nodes: [...s.remote.graph.nodes, item], edges: [...s.remote.graph.edges, ...edges] },
-        vaults: s.remote.vaults.map((v) => (v.person === item.person ? { ...v, item_count: v.item_count + 1 } : v)),
+        // Adding to a vault the backend didn't list yet creates it there.
+        vaults: s.remote.vaults.some((v) => v.person === item.person)
+          ? s.remote.vaults.map((v) => (v.person === item.person ? { ...v, item_count: v.item_count + 1 } : v))
+          : [...s.remote.vaults, { person: item.person, item_count: 1 }],
       },
+      peopleOrder: withPeople(s.peopleOrder, [item.person]),
     }))
   },
 
   addDirective: async (person, text) => {
+    await settled(get)
     if (get().remote.status !== 'ok') {
       const d: Directive = { id: `dir_${localId()}`, person, text, created_at: Date.now() / 1000 }
       set((s) => ({ addedDirectives: [...s.addedDirectives, d] }))
@@ -163,16 +198,9 @@ export const useVaultStore = create<VaultState>()((set, get) => ({
   // Called once per drop. The position is always kept for this session; the backend copy is best
   // effort (an unreachable backend just means it isn't persisted).
   moveCard: async (id, position) => {
-    set((s) => ({
-      positions: { ...s.positions, [id]: position },
-      remote: {
-        ...s.remote,
-        graph: {
-          ...s.remote.graph,
-          nodes: s.remote.graph.nodes.map((n) => (n.id === id ? { ...n, position } : n)),
-        },
-      },
-    }))
+    // Only the positions map changes: replacing the graph would rebuild the whole map and
+    // reshuffle the other cards. The map reads positions whenever it is rebuilt for other reasons.
+    set((s) => ({ positions: { ...s.positions, [id]: position } }))
     // Sample cards exist only in the browser; the backend has nothing to move.
     if (get().remote.status !== 'ok' || SAMPLE_ITEM_IDS.has(id)) return
     try {
@@ -198,6 +226,9 @@ export const useVaultStore = create<VaultState>()((set, get) => ({
   setAddKind: (addKind) => set({ addKind }),
   directivesOpen: false,
   setDirectivesOpen: (directivesOpen) => set({ directivesOpen }),
+  cardSignal: null,
+  signalCard: (nodeId, color) =>
+    set((s) => ({ cardSignal: { nodeId, color, nonce: (s.cardSignal?.nonce ?? 0) + 1 } })),
 }))
 
 // Offline stand-in for POST /vault/items: a card with the text as its summary and no links.

@@ -14,6 +14,9 @@ const MENU_SETTLE_MS = 1200 // after going back, wait for the prompt bar to near
 // list of them on the right). Once a run starts, the heading and hint fade out fast, the bar
 // glides up to the top over 1.5s, and the tree view (a root node for now) appears below it.
 // "Return to main menu" runs the same motion backwards; the run keeps going.
+// How long the prompt bar takes to move between the middle and the top (its transition below).
+const BAR_MOVE_MS = 1500
+
 export default function RunTab({ active }: { active: boolean }) {
   const viewingId = useRunStore((s) => s.viewingId)
   const runs = useRunStore((s) => s.runs)
@@ -25,6 +28,25 @@ export default function RunTab({ active }: { active: boolean }) {
   const syncRuns = useRunStore((s) => s.syncRuns)
   const running = useMemo(() => selectRunning(runs), [runs])
   const started = viewingId !== null
+  // The bar's text fades out while it moves between the middle and the top (BAR_MOVE_MS), then back
+  // in: each move bumps `moves`, and `settled` catches up once the move is over.
+  const [moves, setMoves] = useState(0)
+  const [settled, setSettled] = useState(0)
+  const [movedFor, setMovedFor] = useState(started)
+  if (movedFor !== started) {
+    setMovedFor(started)
+    setMoves((m) => m + 1)
+  }
+  useEffect(() => {
+    if (moves === 0) return
+    const t = setTimeout(() => setSettled(moves), BAR_MOVE_MS)
+    return () => clearTimeout(t)
+  }, [moves])
+  const barMoving = moves !== settled
+  // The prompt bar is for a run that's still going (running or paused): a stopped or finished run
+  // (e.g. opened from History) has nothing to send to, so the bar stays but is disabled.
+  const viewedLife = runs.find((r) => r.id === viewingId)?.life
+  const barDisabled = started && viewedLife === 'ended'
 
   // Learn about runs from the backend: once on arrival, then every few seconds while any run is
   // going (the live event stream isn't built, so polling GET /runs is how we notice a run ended).
@@ -76,7 +98,7 @@ export default function RunTab({ active }: { active: boolean }) {
             question={runs.find((r) => r.id === treeId)?.question ?? ''}
             startedAt={(runs.find((r) => r.id === treeId)?.startedAt ?? 0) / 1000}
             active={active && !runVaultOpen}
-            live={runs.some((r) => r.id === treeId && (r.life === 'running' || r.life === 'paused'))}
+            live={runs.some((r) => r.id === treeId && r.life !== 'ended')}
             onOpenRunVault={openRunVault}
           />
         </div>
@@ -84,7 +106,8 @@ export default function RunTab({ active }: { active: boolean }) {
 
       <button
         onClick={leave}
-        tabIndex={started ? 0 : -1}
+        // Out of reach while hidden (main menu) or covered by the run vault.
+        inert={!started || runVaultOpen}
         className={`absolute top-5 left-6 z-20 flex items-center gap-1.5 text-sm text-muted transition-[opacity,color] hover:text-fg ${
           started ? 'opacity-100 delay-[1200ms] duration-300' : 'pointer-events-none opacity-0 duration-150'
         }`}
@@ -114,13 +137,16 @@ export default function RunTab({ active }: { active: boolean }) {
 
         {/* The prompt bar: centred on the main menu, 16px from the top once a run is on screen. */}
         <div
-          className="pointer-events-auto absolute left-1/2 z-10 w-full max-w-3xl px-4 transition-[top,transform] duration-[1500ms] ease-[cubic-bezier(0.65,0,0.35,1)] motion-reduce:duration-0"
+          inert={barDisabled || runVaultOpen}
+          className={`absolute left-1/2 z-10 w-full px-4 ${started ? 'max-w-[min(48rem,max(320px,calc(100%-400px)))]' : 'max-w-3xl'} transition-[top,transform,opacity] [transition-duration:1500ms,1500ms,300ms] ease-[cubic-bezier(0.65,0,0.35,1)] motion-reduce:duration-0 ${
+            barDisabled ? 'pointer-events-none opacity-50' : 'pointer-events-auto'
+          }`}
           style={{
             top: started ? 16 : '50%',
             transform: `translate(-50%, ${started ? '0%' : '-50%'})`,
           }}
         >
-          <StartRunForm />
+          <StartRunForm ended={barDisabled} textHidden={barMoving} />
         </div>
       </div>
 

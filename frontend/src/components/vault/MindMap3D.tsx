@@ -4,7 +4,7 @@ import { MOUSE, Plane, Raycaster, Vector2, Vector3, type Object3D, type Perspect
 import type { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { isTyping, useSpacePan } from '../../hooks/useSpacePan'
 import { EASE_OUT, flyCamera, type Flight, type Vec3 } from '../../lib/cameraFly'
-import { CARD_H, CARD_W } from '../../lib/vaultSprites'
+import { CARD_H, CARD_W, type BlackBorder } from '../../lib/vaultSprites'
 import { SIDEBAR_RAIL } from '../../store/uiStore'
 import { useVaultStore, type VaultTool } from '../../store/vaultStore'
 import { CursorIcon, FitIcon, HandIcon, LayoutIcon, MinusIcon, MoveIcon, PlusIcon, ResetViewIcon, TargetIcon } from '../ui/Icons'
@@ -74,12 +74,12 @@ function HoverTooltip({
   )
 }
 
-export interface MindMapNode {
+interface MindMapNode {
   id: string
   label: string
 }
 
-export interface MindMapProps<N extends MindMapNode, L extends object> {
+interface MindMapProps<N extends MindMapNode, L extends object> {
   data: { nodes: N[]; links: L[] }
   active: boolean
   // Camera lands on this node when opening/recentering; null = the middle of all cards.
@@ -104,6 +104,9 @@ export interface MindMapProps<N extends MindMapNode, L extends object> {
   // Extra d3 forces / tuning, e.g. grouping. Applied before the first layout, and again (with a
   // re-layout) if it changes. Keep it memoized.
   configureForces?: (g: ForceGraphMethods<NodeObject<N>, LinkObject<N, L>>) => void
+  // Play the card signals requested through the vault store (signalCard). The cards must be built
+  // with makeCardSprite (it carries the black-border hook).
+  signals?: boolean
 }
 
 export default function MindMap3D<N extends MindMapNode, L extends object>({
@@ -120,6 +123,7 @@ export default function MindMap3D<N extends MindMapNode, L extends object>({
   onNodeMoved,
   onRelayout,
   configureForces,
+  signals = false,
 }: MindMapProps<N, L>) {
   type Node = NodeObject<N>
   const tool = useVaultStore((s) => s.tool)
@@ -134,6 +138,61 @@ export default function MindMap3D<N extends MindMapNode, L extends object>({
   const fg = useRef<ForceGraphMethods<Node, LinkObject<N, L>> | undefined>(undefined)
   const box = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ width: 0, height: 0 })
+
+  // Card signal (vault store `cardSignal`), one at a time and at most once per SIGNAL_MS: the card's
+  // border turns black, sweeping clockwise round from the middle of its top edge (SWEEP_MS); a line
+  // shoots up out of that point and off the screen; after a pause the colour sweeps back round
+  // (RESTORE_MS), finishing exactly SIGNAL_MS after it began. Driven frame by frame on the card's
+  // own texture, found through the node each frame (cards are rebuilt when the selection changes).
+  const [beams, setBeams] = useState<BeamSpec[]>([])
+  const nodesNow = useRef(data.nodes)
+  useEffect(() => {
+    nodesNow.current = data.nodes
+  }, [data.nodes])
+  useEffect(() => {
+    if (!signals) return
+    let busyUntil = 0
+    let frame = 0
+    const unsubscribe = useVaultStore.subscribe((s, prev) => {
+      const req = s.cardSignal
+      if (!req || req === prev.cardSignal) return
+      const start = performance.now()
+      if (start < busyUntil) return
+      busyUntil = start + SIGNAL_MS
+      const findNode = () => (nodesNow.current as Node[]).find((n) => n.id === req.nodeId)
+      const border = (from: number, to: number) => {
+        const obj = (findNode() as { __threeObj?: Object3D } | undefined)?.__threeObj
+        ;(obj?.userData.blackBorder as BlackBorder | undefined)?.(from, to)
+      }
+      let shot = false
+      const step = (t: number) => {
+        const e = t - start
+        if (e < SWEEP_MS) border(0, e / SWEEP_MS)
+        else if (e < SIGNAL_MS - RESTORE_MS) border(0, 1)
+        else if (e < SIGNAL_MS) border((e - (SIGNAL_MS - RESTORE_MS)) / RESTORE_MS, 1)
+        else return border(0, 0)
+        if (!shot && e >= SWEEP_MS) {
+          shot = true
+          const top = cardTopOnScreen(findNode())
+          if (top) setBeams((bs) => [...bs, { key: req.nonce, ...top, color: req.color }])
+        }
+        frame = requestAnimationFrame(step)
+      }
+      frame = requestAnimationFrame(step)
+    })
+    // Where the middle of a card's top edge is on screen. Cards always face the camera, so that's
+    // the card's centre plus half its height along the camera's own "up".
+    function cardTopOnScreen(node: Node | undefined) {
+      const g = fg.current
+      if (!g || !node || node.x === undefined) return null
+      const up = new Vector3(0, 1, 0).applyQuaternion(g.camera().quaternion).multiplyScalar(CARD_H / 2)
+      return g.graph2ScreenCoords(node.x + up.x, (node.y ?? 0) + up.y, (node.z ?? 0) + up.z)
+    }
+    return () => {
+      unsubscribe()
+      cancelAnimationFrame(frame)
+    }
+  }, [signals])
 
   // Rebuilding sprites is the expensive part; only redo it when their inputs change.
   const nodeObject = useMemo(
@@ -294,10 +353,15 @@ export default function MindMap3D<N extends MindMapNode, L extends object>({
     if (!active || !ready || !forcesSet) return
     const switched = shownFor.current !== null && shownFor.current.key !== resetKey
     shownFor.current = { key: resetKey }
-    if (switched) return focusCentral(1400, true)
-    flight.current?.cancel()
-    const home = homePose()
-    if (home) fg.current?.cameraPosition(home.pos, home.look, 0)
+    // The library applies new data on a short timer and only then runs its warm-up layout, so
+    // card positions read right now would be the old (or no) ones. Frame the map just after.
+    const t = setTimeout(() => {
+      if (switched) return focusCentral(1400, true)
+      flight.current?.cancel()
+      const home = homePose()
+      if (home) fg.current?.cameraPosition(home.pos, home.look, 0)
+    }, LAYOUT_SETTLE_MS)
+    return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only on entry / view switch
   }, [active, ready, forcesSet, resetKey])
 
@@ -493,6 +557,9 @@ export default function MindMap3D<N extends MindMapNode, L extends object>({
       </div>
 
       <HoverTooltip info={hovered && active ? tooltip(hovered as unknown as N) : null} box={box} />
+      {beams.map((b) => (
+        <Beam key={b.key} x={b.x} y={b.y} color={b.color} onDone={() => setBeams((bs) => bs.filter((o) => o.key !== b.key))} />
+      ))}
 
       <div
         role="toolbar"
@@ -542,5 +609,38 @@ export default function MindMap3D<N extends MindMapNode, L extends object>({
         ))}
       </div>
     </div>
+  )
+}
+
+// Time for the library to take new data and run its warm-up layout (it debounces by ~1ms).
+const LAYOUT_SETTLE_MS = 60
+const SIGNAL_MS = 5000
+const SWEEP_MS = 500
+const RESTORE_MS = 2000
+const BEAM_MS = 600
+
+interface BeamSpec {
+  key: number
+  x: number // start, in px from the map's top-left: the middle of the card's top edge
+  y: number
+  color: string // any CSS colour
+}
+
+// A short line, brightest at its head, that shoots straight up from a card and off the top of the
+// map (keyframes `beam-shoot` in index.css).
+function Beam({ x, y, color, onDone }: Omit<BeamSpec, 'key'> & { onDone: () => void }) {
+  return (
+    <div
+      aria-hidden="true"
+      onAnimationEnd={onDone}
+      className="pointer-events-none absolute z-10 h-24 w-0.5 origin-bottom -translate-x-1/2 -translate-y-full rounded-full"
+      style={{
+        left: x,
+        top: y,
+        background: `linear-gradient(to top, transparent, ${color})`,
+        ['--rise' as string]: `${y + 120}px`,
+        animation: `beam-shoot ${BEAM_MS}ms cubic-bezier(0.5, 0, 0.9, 0.6) forwards`,
+      }}
+    />
   )
 }
