@@ -175,7 +175,7 @@
   }
 }
 
-/* Manual mode's waiting ring, once it has traced round (TreeCanvas AwaitingRing). */
+/* Manual mode's choice ring, once it has traced round (TreeCanvas ChoiceRing). */
 @keyframes ring-pulse {
   0%,
   100% {
@@ -205,6 +205,12 @@
 
 @keyframes fade-in {
   from {
+    opacity: 0;
+  }
+}
+
+@keyframes fade-out {
+  to {
     opacity: 0;
   }
 }

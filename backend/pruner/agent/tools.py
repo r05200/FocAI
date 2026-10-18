@@ -95,6 +95,8 @@ class ToolContext:
     # Where the write tools put what they write (set by the orchestrator).
     on_finding: Callable[[Finding], None] | None = None
     on_branch_finding: Callable[[RunIdea], None] | None = None
+    # Told the path read_file could not read (not attached, missing, private), for the run's notice.
+    on_unreadable: Callable[[str], None] | None = None
 
 
 READ_FILE_MAX_CHARS = 8000
@@ -239,10 +241,14 @@ def read_file_tool(ctx: ToolContext) -> Tool:
         try:
             text = ctx.workspace.read(path, ctx.version)
         except PathError as e:
+            if ctx.on_unreadable is not None:
+                ctx.on_unreadable(path)
             return _error(str(e))
         except KeyError as e:
             return _error(str(e))
         if text is None:
+            if ctx.on_unreadable is not None:
+                ctx.on_unreadable(path)
             return _error(f"{path} does not exist, is binary or too large, or is private")
         lines = text.splitlines()
         first = max(1, int(start_line or 1))

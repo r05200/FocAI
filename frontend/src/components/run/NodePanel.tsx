@@ -33,6 +33,7 @@ export default function NodePanel({
   onClose,
   onShowLogs,
   top,
+  right,
   isRoot,
   onAction,
   onConclude,
@@ -49,6 +50,7 @@ export default function NodePanel({
   onClose: () => void
   onShowLogs: () => void
   top: number // default distance from the top of the tree area, below what's in the corner
+  right?: number // default distance from the right (clear of the notifications panel when it's open)
   isRoot: boolean
   // Keep / park / restore (POST .../nodes/{id}/<action>); rejects with the backend's reason.
   onAction: (action: HumanAction) => Promise<void>
@@ -97,6 +99,7 @@ export default function NodePanel({
     <DraggablePanel
       aria-label="Node"
       top={top}
+      right={right}
       onClose={onClose}
       label={
         <>

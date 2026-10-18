@@ -21,3 +21,4 @@ so they can be tuned without touching logic. Planned (added as each step is buil
 - `synthesize_research.md` (done): judge a research experiment: are the resources found relevant to the objectives
 - `vault_ingest_link.md` (done): a paper link -> title and the abstract (or "No summary found.") parsed from the fetched page
 - `fork_brief.md` (done): the brief for the new hypotheses after a confirmed fork (the amended objectives and what was parked)
+- `execution_plan.md` (done): the prompt and the attached files -> the execution order (each step with the command the user wrote), the one run command (with its experiment-number placeholder) and the input files the text names; every command is checked word for word in code

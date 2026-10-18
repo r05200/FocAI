@@ -13,6 +13,10 @@
 // Chosen: when a branch is kept, a solid blue line is drawn down its edge over CHOSEN_DRAW_MS and
 // stays.
 //
+// Choices (manual mode): the lines to the proposals waiting on a person are drawn yellow, and each
+// proposal's ring traces round once its line has arrived, then pulses. Picking one draws the blue
+// line over the yellow, and the node turns blue as it arrives.
+//
 // Appearance times are kept per node id and never recomputed, so a node already on screen doesn't
 // replay or jump when the tree updates. CSS delays are relative to when a node was first seen,
 // which is when its component mounts.
@@ -58,6 +62,15 @@ export function popDelay(a: Appearance): number {
 // CSS delay for drawing the line to a node, or null when it isn't drawn (it fades in instead).
 export function drawDelay(a: Appearance): number | null {
   return a.drawAt === null ? null : a.drawAt - a.seenAt
+}
+
+// Manual mode's yellow line to a choice: when it starts drawing (wall clock) and for how long. It
+// goes with the node's own appearance: drawn alongside its line while unfolding, else from when
+// the node pops in, so nothing yellow shows before the node does.
+export function choiceLine(a: Appearance): { at: number; ms: number; unfold: boolean } {
+  return a.drawAt !== null
+    ? { at: a.drawAt, ms: UNFOLD_DRAW_MS, unfold: true }
+    : { at: a.popAt, ms: CHOSEN_DRAW_MS, unfold: false }
 }
 
 // Adds times for nodes not in `prev` (returns `prev` itself when there's nothing new). `rootAfterMs`

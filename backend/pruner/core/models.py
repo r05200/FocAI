@@ -384,6 +384,43 @@ class RunCommand(BaseModel):
     source_name: str = ""  # which text it was found in ("question", "spec", a file path)
     result_file: str | None = None  # where the result JSON is written, if the user said
     timeout_s: float | None = None
+    # A part of `text` (and `result_file`) the user said must differ for every experiment, e.g.
+    # "N" in `--output runs/experiment-N.json`: each run replaces it with a fresh number.
+    number_placeholder: str | None = None
+
+
+class PlanStep(BaseModel):
+    """One step of the work, in the order the user's text gives it."""
+
+    command: str | None = None  # word for word from the user's text; None if they gave none
+    purpose: str = ""
+    kind: Literal["setup", "experiment", "check", "record"] = "setup"
+    verified: bool = False  # the command was found word for word in what the user wrote
+
+
+class ExecutionPlan(BaseModel):
+    """The order the work runs in, read by an LLM from the prompt and the attached files.
+
+    Only `run_command` is ever executed (as Run.command, once verified); the other steps are
+    shown to the person. The pruner keeps its own versions, so the user's bookkeeping steps
+    (commits, result tables) are not run."""
+
+    steps: list[PlanStep] = Field(default_factory=list)
+    run_command: str | None = None  # verified, or None
+    command_known: bool = False
+    why: str = ""  # why no run command was accepted
+    # Files the user's text names as inputs that were not attached (the planner never saw them).
+    missing_files: list[str] = Field(default_factory=list)
+    # Files the agent tried to read during the run and could not.
+    unreadable: list[str] = Field(default_factory=list)
+
+
+class PreflightRequest(BaseModel):
+    # Asked as the user types, one LLM call each: bounded so a pasted wall of text can't run up
+    # the bill (the prompt bar takes at most 2000 characters).
+    question: str = Field(max_length=2000)
+    spec: str = Field(default="", max_length=20_000)
+    paths: list[str] = Field(default_factory=list, max_length=50)
 
 
 class Run(BaseModel):
@@ -410,6 +447,7 @@ class Run(BaseModel):
     paths: list[str] = Field(default_factory=list)  # the user's files or folders (server paths)
     workspace: WorkspaceInfo | None = None
     command: RunCommand | None = None
+    plan: ExecutionPlan | None = None  # the execution order read from the prompt and files
     # The run waits for a person: to answer the command question, or (manual mode) to choose
     # which proposed hypothesis to pursue next.
     # "fork": amended objectives led to a fork suggestion; nothing new runs until a person

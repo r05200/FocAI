@@ -27,7 +27,7 @@ from pruner.core.config import Config, get_config
 from pruner.core.llm import DiskCache
 from pruner.core.models import ExperimentRun, RunCommand
 from pruner.orchestrator.context import compare_metrics
-from pruner.runs.command import runnable
+from pruner.runs.command import fill_placeholder, numbered, runnable
 from pruner.workspace.paths import SKIP_DIRS, PathError
 from pruner.workspace.runner import CommandResult, run_command
 from pruner.workspace.workspace import Workspace
@@ -122,21 +122,38 @@ class ExperimentPhase:
         self.cfg = cfg or get_config()
         self.runner = runner
         self.cache = experiment_cache(self.cfg)
+        self._taken: dict[str, set[int]] = {}  # root -> experiment numbers handed out
 
     async def run(self, ws: Workspace, command: RunCommand, version: str) -> ExperimentRun:
         """The files are always put in place; the command itself is skipped when an identical
-        experiment (same code version, command and root) succeeded before and the cache is on."""
+        experiment (same code version, command and root) succeeded before and the cache is on.
+        A numbered command is never reused: each run must get (and write under) its own number."""
         await asyncio.to_thread(ws.apply_version, version)
+        cache = None if command.number_placeholder else self.cache
         key = DiskCache.key({"kind": "command", "version": version, "command": command.text,
                              "result_file": command.result_file, "root": str(ws.roots.root)})
-        if self.cache is not None and (hit := self.cache.get(key)) is not None:
+        if cache is not None and (hit := cache.get(key)) is not None:
             return ExperimentRun.model_validate({**hit, "cached": True})
         run = await self._run(ws, command)
-        if self.cache is not None and run.error is None:
-            self.cache.set(key, run.model_dump())
+        if cache is not None and run.error is None:
+            cache.set(key, run.model_dump())
         return run
 
+    def _numbered(self, ws: Workspace, command: RunCommand) -> RunCommand:
+        """The command with its experiment-number placeholder filled in with a fresh number
+        (kept per root, so two experiments never share one); unchanged if it has none."""
+        if not command.number_placeholder:
+            return command
+        taken = self._taken.setdefault(str(ws.roots.root), set())
+        n, text = numbered(command.text, command.number_placeholder, ws.roots.root, taken,
+                           result_file=command.result_file)
+        taken.add(n)
+        result_file = (fill_placeholder(command.result_file, command.number_placeholder, n)
+                       if command.result_file else None)
+        return command.model_copy(update={"text": text, "result_file": result_file})
+
     async def _run(self, ws: Workspace, command: RunCommand) -> ExperimentRun:
+        command = self._numbered(ws, command)
         before = await asyncio.to_thread(json_mtimes, ws.roots.root)
         if command.result_file:  # also when it is not a .json file
             hint = ws.roots.root / command.result_file

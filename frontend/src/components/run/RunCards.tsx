@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { confirmSuggestion, dismissSuggestion, toggleInstruction } from '../../api/client'
 import type { Overlay } from '../../hooks/useRunTree'
 import type { ForkRequest, HumanAction, Instruction, Suggestion, TreeNode } from '../../types'
+import { choiceNodes, offeredSuggestions } from '../../lib/runInbox'
 import { ForkCard, UndoForkCard } from './ForkCard'
 
 const ACTION_LABEL: Record<Suggestion['action'], string> = {
@@ -33,9 +34,9 @@ interface Props {
 
 const errorText = (err: unknown, fallback: string) => (err instanceof Error ? err.message : fallback)
 
-// The run's to-dos for a person, stacked in the tree's top-left corner: suggestions for where to
-// continue, and the steering instructions (chips that can be turned off). Each card only shows
-// when it has something in it.
+// The run's to-dos for a person, stacked in the notifications panel: the fork, the choices,
+// suggestions for where to continue, and the steering instructions (chips that can be turned off).
+// Each card only shows when it has something in it.
 export default function RunCards({
   runId,
   suggestions,
@@ -50,17 +51,16 @@ export default function RunCards({
   onForkChanged,
   onNodeAction,
 }: Props) {
-  // Manual mode: the proposals waiting on a choice (pending children of the awaiting nodes).
-  const waiting = new Set(nodes.filter((n) => n.awaiting_choice).map((n) => n.id))
-  const choices = nodes.filter((n) => n.parent_id !== null && waiting.has(n.parent_id) && n.status === 'pending')
-  // A fork suggestion gets its own card (with the choices it needs), not a plain Confirm.
-  const offered = suggestions.filter((s) => s.status === 'open' && s.action !== 'fork')
+  const choices = choiceNodes(nodes)
+  const offered = offeredSuggestions(suggestions)
   const steering = instructions.filter((i) => i.kind === 'steer')
-  if (!pendingFork && !lastFork && choices.length === 0 && offered.length === 0 && steering.length === 0) return null
+  if (!pendingFork && !lastFork && choices.length === 0 && offered.length === 0 && steering.length === 0) {
+    return <p className="px-1 text-xs text-muted">Nothing needs you right now.</p>
+  }
   const title = (id: string) => nodes.find((n) => n.id === id)?.description ?? id
 
   return (
-    <div className="pointer-events-none absolute top-3 left-5 z-10 flex max-h-[calc(100%-24px)] w-[min(320px,calc(100%-40px))] flex-col gap-2.5 overflow-auto">
+    <div className="flex flex-col gap-2.5">
       {pendingFork && (
         <ForkCard
           key={pendingFork.id}

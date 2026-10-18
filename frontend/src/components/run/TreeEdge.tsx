@@ -11,8 +11,11 @@ type TreeEdgeData = {
   // instead of fading in; null otherwise.
   drawDelay: number | null
   pulsing: boolean // the run is going: send pulses down candidate lines
-  // Manual mode: the node it leads to waits for a person's choice: a yellow line is drawn to it.
-  awaiting?: boolean
+  // Manual mode: the node it leads to is one of the proposals waiting on a person's choice: a
+  // yellow line is drawn to it from `choiceAt` (wall-clock ms) over `choiceMs`, instead of the pulse.
+  choice?: boolean
+  choiceAt?: number
+  choiceMs?: number
 }
 export type TreeEdgeType = Edge<TreeEdgeData, 'tree'>
 
@@ -20,12 +23,17 @@ const BLUE = 'var(--color-kind-paper)'
 const YELLOW = 'var(--color-kind-note)'
 // Room around the path for the draw mask, so a straight (zero-height) line isn't clipped away.
 const PAD = 16
+// How far a choice's yellow ring reaches outside its node (TreeCanvas ChoiceRing: a 48px node, the
+// ring 12px wider at r=48%, stroke 2.5). A line to a choice stops there, just touching the ring,
+// rather than running under it and showing through as the ring pulses.
+const RING_GAP = 6
 
 // A tree edge (smoothstep, left to right). Layers:
 //   - the plain line, fading in with the node it leads to (dashed when parked), or, while a tree
 //     unfolds, drawn from parent to child (through a mask, so a dashed line draws too);
 //   - candidate, while the run is going: a short blue dash that travels from parent to child every
 //     PULSE_MS (in step with the child's ripple, see TreeCanvas);
+//   - choice (manual mode): a yellow line drawn from parent to child once, instead of the pulse;
 //   - chosen: a solid blue line drawn from parent to child once, which stays.
 export default function TreeEdge({
   id,
@@ -38,7 +46,8 @@ export default function TreeEdge({
   style,
   data,
 }: EdgeProps<TreeEdgeType>) {
-  const [path] = getSmoothStepPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition })
+  const [fullPath] = getSmoothStepPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition })
+  const [ringPath] = getSmoothStepPath({ sourceX, sourceY, sourcePosition, targetX: targetX - RING_GAP, targetY, targetPosition })
   const state = data?.state ?? 'candidate'
   const appearDelay = data?.appearDelay ?? 0
   const drawDelay = data?.drawDelay ?? null
@@ -49,6 +58,13 @@ export default function TreeEdge({
   // kept branch): its blue line follows the line's own timing. Otherwise the branch was kept just
   // now (or a conclusion landed under it): the blue line draws at once.
   const [chosenAtMount] = useState(state === 'chosen')
+  // Once a choice, the yellow line stays to hand over: picked, the blue line draws over it and it
+  // fades once covered; dropped, it fades at once.
+  const choice = !!data?.choice
+  const [wasChoice, setWasChoice] = useState(choice)
+  if (choice && !wasChoice) setWasChoice(true)
+  // While its node has the ring, the line stops at the ring's edge.
+  const path = choice ? ringPath : fullPath
   // Edge ids are only unique within one canvas; more than one tree can be mounted.
   const maskId = `draw-${useId()}-${id}`.replace(/[^\w-]/g, '')
   return (
@@ -85,7 +101,16 @@ export default function TreeEdge({
           ...(drawDelay === null ? { animation: `fade-in ${NODE_POP_MS}ms ease-out ${appearDelay}ms both` } : {}),
         }}
       />
-      {state === 'candidate' && data?.pulsing && <Pulse path={path} />}
+      {state === 'candidate' && data?.pulsing && !choice && <Pulse path={path} />}
+      {/* Manual mode: the line to a choice (under the blue, which draws over it once it's picked). */}
+      {wasChoice && (
+        <ChoiceLine
+          path={ringPath}
+          startAt={data?.choiceAt ?? 0}
+          ms={data?.choiceMs ?? CHOSEN_DRAW_MS}
+          ending={choice ? null : state === 'chosen' ? CHOSEN_DRAW_MS : 0}
+        />
+      )}
       {state === 'chosen' && (
         // Drawn alongside the plain line while unfolding; otherwise once the node is there.
         <ChosenLine
@@ -94,9 +119,27 @@ export default function TreeEdge({
           ms={chosenAtMount && drawDelay !== null ? UNFOLD_DRAW_MS : CHOSEN_DRAW_MS}
         />
       )}
-      {/* Manual mode: the node it leads to waits for a choice (over the blue, while it lasts). */}
-      {data?.awaiting && <ChosenLine path={path} startAt={0} ms={CHOSEN_DRAW_MS} color={YELLOW} />}
     </>
+  )
+}
+
+// The yellow line to a choice, drawn from parent to child once from `startAt` (ms, wall clock;
+// straight away if that's past). `ending`: the choice is over; it fades out after that many ms.
+function ChoiceLine({ path, startAt, ms, ending }: { path: string; startAt: number; ms: number; ending: number | null }) {
+  const [delay] = useState(() => Math.max(0, startAt - now()))
+  return (
+    <path
+      d={path}
+      fill="none"
+      stroke={YELLOW}
+      strokeWidth={2}
+      pathLength={1}
+      strokeDasharray="1"
+      className="pointer-events-none"
+      style={{
+        animation: ending === null ? `edge-draw ${ms}ms var(--ease-zoom) ${delay}ms both` : `fade-out 300ms ease-out ${ending}ms both`,
+      }}
+    />
   )
 }
 
@@ -120,13 +163,13 @@ function Pulse({ path }: { path: string }) {
 
 // The chosen path's solid blue line, drawn from parent to child once, starting at `startAt` (ms, wall
 // clock): straight away if that's already past, e.g. a branch kept long after its line appeared.
-function ChosenLine({ path, startAt, ms, color = BLUE }: { path: string; startAt: number; ms: number; color?: string }) {
+function ChosenLine({ path, startAt, ms }: { path: string; startAt: number; ms: number }) {
   const [delay] = useState(() => Math.max(0, startAt - now()))
   return (
     <path
       d={path}
       fill="none"
-      stroke={color}
+      stroke={BLUE}
       strokeWidth={2}
       pathLength={1}
       strokeDasharray="1"

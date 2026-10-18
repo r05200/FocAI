@@ -52,3 +52,6 @@ data/
 
 # Personal study notes
 docs/ARCHITECTURE.md
+
+# Local scripts
+backend/scripts/

@@ -95,6 +95,56 @@ def missing_scripts(command: str, root: Path) -> list[str]:
     return missing
 
 
+def _placeholder_re(placeholder: str) -> re.Pattern[str]:
+    """`placeholder` where it is not part of a longer word: the N in `experiment-N.json`, not the
+    one in `NAME`."""
+    return re.compile(rf"(?<![A-Za-z0-9_]){re.escape(placeholder)}(?![A-Za-z0-9_])")
+
+
+def has_placeholder(command: str, placeholder: str) -> bool:
+    """Whether `placeholder` sits inside a path-like word of the command (never a whole word:
+    in `-n N` it would be an argument the user meant literally)."""
+    pattern = _placeholder_re(placeholder)
+    return any(pattern.search(w) and w.strip("'\"") != placeholder for w in command.split())
+
+
+def fill_placeholder(text: str, placeholder: str, number: int) -> str:
+    """`text` with `placeholder` replaced by `number` inside path-like words only: a word that is
+    the placeholder alone (`-n N`) is left as written, as has_placeholder() says."""
+    pattern = _placeholder_re(placeholder)
+
+    def fill(word: re.Match[str]) -> str:
+        w = word.group()
+        return w if w.strip("'\"") == placeholder else pattern.sub(str(number), w)
+
+    return re.sub(r"\S+", fill, text)
+
+
+def _word_path(word: str) -> str:
+    """The path in a command word: `--output=runs/x.json` -> `runs/x.json`, quotes stripped."""
+    if word.startswith("-") and "=" in word:
+        word = word.split("=", 1)[1]
+    return word.strip("'\"")
+
+
+def numbered(command: str, placeholder: str, root: Path, taken: set[int],
+             result_file: str | None = None) -> tuple[int, str]:
+    """The smallest experiment number not in `taken` whose filled-in paths (the command's and
+    the result file's) do not exist yet under `root` (an evaluator may refuse to overwrite an
+    earlier result, and a stale result file would be read as this run's), and the command."""
+    pattern = _placeholder_re(placeholder)
+    words = [w for w in command.split() if pattern.search(w) and w.strip("'\"") != placeholder]
+    if result_file and pattern.search(result_file):
+        words.append(result_file)
+    n = 1
+    while True:
+        if n not in taken and not any(
+                (root / _word_path(fill_placeholder(w, placeholder, n))).exists()
+                for w in words):
+            return n, fill_placeholder(command, placeholder, n)
+        n += 1
+
+
 def runnable(command: str) -> str:
     """The command as it will run: a bare `python`/`python3` that is not on PATH becomes the
     interpreter running this server. The stored text is never changed."""

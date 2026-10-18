@@ -13,8 +13,9 @@ from pruner.api.deps import (
     get_run_store,
     get_supporting_llm,
 )
-from pruner.core.llm import LLM
+from pruner.core.llm import LLM, LLMError
 from pruner.core.models import (
+    ExecutionPlan,
     ForkConfirmRequest,
     ForkRequest,
     ForkUndoRequest,
@@ -23,6 +24,7 @@ from pruner.core.models import (
     InstructionToggle,
     ManualRequest,
     PauseResult,
+    PreflightRequest,
     Run,
     RunSnapshot,
     StartRunRequest,
@@ -39,6 +41,7 @@ from pruner.runs.manager import (
 )
 from pruner.runs.store import RunStore
 from pruner.runs.stream import run_events
+from pruner.workspace.paths import PathError
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -58,6 +61,25 @@ async def start_run(body: StartRunRequest, manager: Manager) -> Run:
         return await manager.start(body)
     except PathLocked as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
+
+
+@router.post("/preflight")
+async def preflight(body: PreflightRequest, manager: Manager) -> ExecutionPlan:
+    """Before a run starts: the execution order an LLM reads from the question and the files
+    at `paths` (each command checked word for word against them), whether the run command is
+    known, and the files the text names as inputs that are not attached. Changes nothing.
+    422 for a relative or missing path, 502 if the LLM fails."""
+    if not body.paths:
+        return ExecutionPlan(why="no files are attached, so there is nothing to run")
+    try:
+        return await manager.planner.preflight(question=body.question, spec=body.spec,
+                                               paths=body.paths)
+    except PathError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    except (LLMError, KeyError, ValueError) as e:  # LLM failed or gave unusable output
+        raise HTTPException(status_code=502, detail=f"the planner failed: {e}") from e
+    except OSError as e:  # an attached file could not be read
+        raise HTTPException(status_code=422, detail=f"could not read the files: {e}") from e
 
 
 @router.get("")

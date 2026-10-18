@@ -261,6 +261,10 @@ export interface Run {
   paused: boolean
   caps: Caps
   paths?: string[] // the user's files or folders (server paths)
+  // The experiment command, once known (from the user's text or their answer to the question).
+  command?: RunCommand | null
+  // The execution order read from the prompt and the files, with the missing / unreadable files.
+  plan?: ExecutionPlan | null
   // The run waits for a person: to answer the command question, or (manual mode) to choose which
   // proposed hypothesis to pursue next.
   // "fork": a fork is suggested and nothing new runs until a person confirms or dismisses it (fork_id).
@@ -273,6 +277,41 @@ export interface Run {
   final_answer: string | null
   totals: RunTotals
   created_at: number
+}
+
+// The command that runs one experiment, always from the user's own text or answer.
+export interface RunCommand {
+  text: string
+  source: 'prompt' | 'file' | 'user_answer'
+  source_name: string
+  result_file: string | null
+  timeout_s: number | null
+  // A part of `text` replaced by a fresh experiment number on every run (e.g. "N").
+  number_placeholder?: string | null
+}
+
+export interface PlanStep {
+  command: string | null
+  purpose: string
+  kind: 'setup' | 'experiment' | 'check' | 'record'
+  verified: boolean // found word for word in the user's text
+}
+
+// POST /runs/preflight, and Run.plan: the steps an LLM read from the prompt and the files. Only
+// run_command is ever executed.
+export interface ExecutionPlan {
+  steps: PlanStep[]
+  run_command: string | null
+  command_known: boolean
+  why: string // why no run command was accepted
+  missing_files: string[] // named in the text as inputs, not attached
+  unreadable: string[] // the agent tried to read them during the run and could not
+}
+
+export interface PreflightRequest {
+  question: string
+  spec?: string
+  paths: string[]
 }
 
 export interface DeadEnd {

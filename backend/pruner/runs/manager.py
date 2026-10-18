@@ -81,11 +81,13 @@ import copy
 import dataclasses
 import logging
 import os
+import re
 import sys
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import ExitStack
 from dataclasses import dataclass, field
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, TypeVar
 
 from pruner.agent.agent import Agent
@@ -118,6 +120,7 @@ from pruner.core.llm import LLMCancelled, LLMError
 from pruner.core.models import (
     Caps,
     DeadEnd,
+    ExecutionPlan,
     Finding,
     ForkRequest,
     HumanAction,
@@ -142,7 +145,8 @@ from pruner.orchestrator.context import code_base
 from pruner.orchestrator.queue import blocked
 from pruner.orchestrator.steering import Job, job_for
 from pruner.runs.command import verify_command
-from pruner.runs.objectives import ObjectiveMaker
+from pruner.runs.objectives import CommandCandidate, ObjectiveMaker
+from pruner.runs.plan import Planner
 from pruner.runs.store import RunStore
 from pruner.runs.stream import EventBus
 from pruner.vault.store import VaultStore
@@ -154,6 +158,9 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+# At most this many unreadable files are listed on a run (each new one re-sends the run).
+UNREADABLE_MAX = 20
 
 
 class Emitter:
@@ -237,6 +244,7 @@ class LiveRun:
     tasks: set[asyncio.Task] = field(default_factory=set)
     answers: dict[str, asyncio.Future] = field(default_factory=dict)  # question id -> waiter
     workspace: Workspace | None = None
+    attachments: dict[str, str] = field(default_factory=dict)  # attached files' texts (capped)
     tool_seen: dict[str, str] = field(default_factory=dict)  # tool results reused within the run
     focus: str | None = None  # a node the orchestrator should run next (a confirmed suggestion)
     suggestions: list[Suggestion] = field(default_factory=list)
@@ -298,6 +306,8 @@ class RunManager:
         self.vault = vault  # gives the agent its tools; without it the agent answers from the prompt
         self.orchestrator = orchestrator  # runs with files go through it (orchestrator/loop.py)
         self.cfg = cfg or get_config()
+        # Reads the execution order from the prompt and the files (same LLM as the objectives).
+        self.planner = Planner(objectives.llm, self.cfg)
         self.bus = bus or EventBus()  # live events for GET /runs/{id}/events
         self._live: dict[str, LiveRun] = {}
         self._locks: dict[str, str] = {}  # a path some running run works on -> that run's id
@@ -636,6 +646,10 @@ class RunManager:
         if question.purpose == "command":
             state.run.command = RunCommand(text=answer, source="user_answer",
                                            source_name=question.id)
+            if state.run.plan is not None:
+                state.run.plan.command_known = True
+                state.run.plan.run_command = answer
+                state.run.plan.why = ""  # it said why the command was unknown
             state.run.awaiting = None
             state.emitter.emit(RunUpdated, run=state.run)
         self._save(state)
@@ -690,25 +704,129 @@ class RunManager:
         state.emitter.emit(Activity, message=f"Backed up {len(run.workspace.files)} editable "
                                              f"file(s) under {run.workspace.root}; experiments "
                                              f"will edit them in place.")
-        return state.workspace.attachments_text()
+        state.attachments = state.workspace.attachments_text()
+        return state.attachments
 
-    async def _settle_command(self, state: LiveRun, candidate, attachments: dict[str, str]) -> None:
-        """Keep the command the objectives LLM found only if the user wrote it; else ask."""
+    @staticmethod
+    def _command_sources(run: Run, attachments: dict[str, str]) -> dict[str, str]:
+        """The user's own texts a command may be quoted from (see runs/command.py)."""
+        return {"question": run.question,
+                **{("spec" if i.kind == "spec" else f"instruction {i.id}"): i.text
+                   for i in run.instructions},
+                **attachments}
+
+    async def _objectives_and_plan(self, state: LiveRun, attachments: dict[str, str]
+                                   ) -> tuple[CommandCandidate, RunCommand | None]:
+        """Write the run's objectives and, for a run with files, its execution plan (the steps
+        and commands read from the prompt and the attached files), both at once. Returns the
+        objectives LLM's command candidate and the plan's verified run command (or None). A plan
+        that cannot be written does not stop the run: the command is then asked for."""
+        run = state.run
+        spec = next((i.text for i in run.instructions if i.kind == "spec"), "")
+        made = self.objectives.create_full(question=run.question, spec=spec,
+                                           directives=run.directives, attachments=attachments)
+        if state.workspace is None:
+            run.objectives, candidate = await made
+            return candidate, None
+        roots = state.workspace.roots
+
+        async def plan() -> tuple[ExecutionPlan, RunCommand | None] | Exception:
+            try:
+                return await self.planner.plan(
+                    question=run.question, spec=spec, attachments=attachments,
+                    sources=self._command_sources(run, attachments), roots=roots,
+                    directives=run.directives)
+            except LLMCancelled:
+                raise  # the run was stopped
+            except (LLMError, KeyError, OSError, ValueError) as e:  # LLM failed, bad output,
+                return e  # missing prompt or unreadable file: the command is asked for instead
+
+        # Both at once; if one fails (or the run is stopped), the other is not left running.
+        tasks = (asyncio.ensure_future(made), asyncio.ensure_future(plan()))
+        try:
+            (run.objectives, candidate), plan_out = await asyncio.gather(*tasks)
+        except BaseException:
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
+        if isinstance(plan_out, Exception):
+            log.warning("run %s: the execution plan could not be written: %s", run.id, plan_out)
+            run.plan = ExecutionPlan(why=f"the execution plan could not be read ({plan_out})")
+            command = None
+        else:
+            run.plan, command = plan_out
+        self._announce_plan(state)
+        return candidate, command
+
+    def _announce_plan(self, state: LiveRun) -> None:
+        plan = state.run.plan
+        if plan is None:
+            return
+        state.emitter.emit(RunUpdated, run=state.run)
+        if plan.steps:
+            lines = [f"{n}. {s.purpose}" + (f": {s.command}" if s.command else "")
+                     + ("" if s.verified or not s.command else " (not found word for word)")
+                     for n, s in enumerate(plan.steps, 1)]
+            state.emitter.emit(Activity, message="Execution order read from your prompt and "
+                                                 "files:\n" + "\n".join(lines))
+        if plan.missing_files:
+            state.emitter.emit(Activity, message=(
+                f"Your text names {', '.join(plan.missing_files)}, which "
+                f"{'is' if len(plan.missing_files) == 1 else 'are'} not attached: the plan was "
+                f"written without reading {'it' if len(plan.missing_files) == 1 else 'them'}."))
+
+    def _note_unreadable(self, state: LiveRun, path: str) -> None:
+        """The agent could not read `path` (not attached, missing, private): shown on the run,
+        but only for a file the user's own text names (the question, an instruction or an
+        attached file). A path the agent guessed at is no news to the user."""
+        run = state.run
+        # `./data.csv`, `data.csv` and "`data.csv`" are one file.
+        path = os.path.normpath(path.strip().strip("`'\"").strip()).replace(os.sep, "/")
+        if path in (".", "/") or path.startswith("../"):
+            return
+        if run.plan is not None and (path in run.plan.unreadable
+                                     or len(run.plan.unreadable) >= UNREADABLE_MAX):
+            return
+        if not state.attachments and state.workspace is not None:  # e.g. a recovered run
+            state.attachments = state.workspace.attachments_text()
+        # Named means written as a whole path-like word: the path itself, or its file name when
+        # that has an extension (a bare `a` or `main` would match almost any prose).
+        name = PurePosixPath(path).name
+        names = {path, name} if "." in name.strip(".") else {path}
+        text = "\n".join(self._command_sources(run, state.attachments).values())
+        if not any(re.search(rf"(?<![\w.-]){re.escape(n)}(?![\w-]|\.\w)", text) for n in names):
+            return
+        run.plan = run.plan or ExecutionPlan(command_known=run.command is not None)
+        run.plan.unreadable.append(path)
+        state.emitter.emit(RunUpdated, run=run)
+
+    async def _settle_command(self, state: LiveRun, candidate: CommandCandidate,
+                              attachments: dict[str, str],
+                              planned: RunCommand | None = None) -> None:
+        """Use the plan's verified command, else the one the objectives LLM found if the user
+        wrote it; else ask."""
         run = state.run
         if state.workspace is None or run.command is not None:
             return
-        sources = {"question": run.question,
-                   **{("spec" if i.kind == "spec" else f"instruction {i.id}"): i.text
-                      for i in run.instructions},
-                   **attachments}
-        command, why = verify_command(candidate.run_command, sources,
-                                      state.workspace.roots.root,
-                                      result_hint=candidate.result_hint)
+        sources = self._command_sources(run, attachments)
+        command, why = planned, ""
+        if command is None:
+            command, why = verify_command(candidate.run_command, sources,
+                                          state.workspace.roots.root,
+                                          result_hint=candidate.result_hint)
         if command is not None:
+            if run.plan is not None:
+                run.plan.command_known = True
+                run.plan.run_command = run.plan.run_command or command.text
+                run.plan.why = ""  # it said why the plan found no command
             run.command = command
             state.emitter.emit(RunUpdated, run=run)
+            numbered = (f" ({command.number_placeholder} is replaced by a new experiment number "
+                        f"each time)" if command.number_placeholder else "")
             state.emitter.emit(Activity, message=f"Experiment command (from the "
-                                                 f"{command.source_name}): {command.text}")
+                                                 f"{command.source_name}): {command.text}"
+                                                 f"{numbered}")
             return
         root = state.workspace.roots.root
         await self._ask(state, (f"What command runs one experiment in {root}? ({why}.) Type it "
@@ -754,7 +872,8 @@ class RunManager:
         ctx = ToolContext(run=state.run, nodes=state.nodes, vault=self.vault, cfg=self.cfg,
                           workspace=state.workspace, version=version, node_id=node.id,
                           on_finding=lambda f: self._add_finding(state, f),
-                          on_branch_finding=lambda i: self._add_idea(state, i))
+                          on_branch_finding=lambda i: self._add_idea(state, i),
+                          on_unreadable=lambda p: self._note_unreadable(state, p))
         return ToolRunner(phase_tools(ctx, phase), phase=phase, cfg=self.cfg,  # type: ignore[arg-type]
                           on_call=lambda r: self._log_call(state, node.id, r),
                           seen=state.tool_seen, scope=version or "")
@@ -1217,12 +1336,9 @@ class RunManager:
         run, emitter = state.run, state.emitter
         await self._checkpoint(state)
         attachments = await self._setup_files(state)
-        spec = next((i.text for i in run.instructions if i.kind == "spec"), "")
-        run.objectives, candidate = await self.objectives.create_full(
-            question=run.question, spec=spec, directives=run.directives,
-            attachments=attachments)
+        candidate, planned = await self._objectives_and_plan(state, attachments)
         emitter.emit(ObjectivesUpdated, objectives=run.objectives)
-        await self._settle_command(state, candidate, attachments)
+        await self._settle_command(state, candidate, attachments, planned)
 
         root = Node(id="n1", run_id=run.id, type="hypothesis", description=run.question,
                     status="running",

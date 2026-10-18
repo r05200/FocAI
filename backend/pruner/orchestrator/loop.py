@@ -182,12 +182,9 @@ class Orchestrator:
         await host._checkpoint(state)
         if not run.objectives:  # a fresh run (a recovered one already has them)
             attachments = await host._setup_files(state)
-            spec = next((i.text for i in run.instructions if i.kind == "spec"), "")
-            run.objectives, candidate = await host.objectives.create_full(
-                question=run.question, spec=spec, directives=run.directives,
-                attachments=attachments)
+            candidate, planned = await host._objectives_and_plan(state, attachments)
             emitter.emit(ObjectivesUpdated, objectives=run.objectives)
-            await host._settle_command(state, candidate, attachments)
+            await host._settle_command(state, candidate, attachments, planned)
         else:
             await host._need_command(state)
 

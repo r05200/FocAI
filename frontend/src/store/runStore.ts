@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { ApiError, isOffline, listRuns, pauseRun, resumeRun, setManualMode, stopRun } from '../api/client'
 import { isLocalRun } from '../lib/localRun'
-import type { PauseResult, Run } from '../types'
+import type { ExecutionPlan, PauseResult, Question, Run } from '../types'
 
 // What the prompt bar needs to know about the run being viewed.
 //   idle     -> nothing running here; the prompt bar shows Send
@@ -20,12 +20,32 @@ interface RunEntry {
   startedAt: number
 }
 
+// The viewed run's command state, for the notice under the prompt bar. Published by the run's tree,
+// which holds the run's live state (snapshot + event stream).
+export interface RunCommandState {
+  runId: string
+  plan: ExecutionPlan | null
+  commandKnown: boolean
+  hasFiles: boolean
+  question: Question | null // the pending "command" question, if the run is waiting on it
+}
+
 interface RunState {
-  // Manual mode per run id, as last set from this browser (the switch in the tree's top-right
-  // corner); otherwise the run's own Run.manual applies. The backend is told on every flip
-  // (POST /runs/{id}/manual), and its answer (the run) is returned.
+  commandState: RunCommandState | null
+  setCommandState: (s: RunCommandState | null) => void
+  // Manual mode per run id, as last set from this browser (the switch next to the prompt bar);
+  // otherwise the run's own Run.manual applies (`serverManual`, published by the run's tree). The
+  // backend is told on every flip (POST /runs/{id}/manual); its answer (the run) is kept in
+  // `manualReply` for the tree to put on screen at once.
   manual: Record<string, boolean>
-  setManual: (runId: string, manual: boolean, before: boolean) => Promise<Run | undefined>
+  setManual: (runId: string, manual: boolean, before: boolean) => Promise<void>
+  serverManual: Record<string, boolean>
+  setServerManual: (runId: string, manual: boolean) => void
+  manualReply: Run | null
+  // The main menu's switch: whether the next run starts in manual mode (sent with POST /runs). Kept
+  // as set between runs.
+  draftManual: boolean
+  setDraftManual: (manual: boolean) => void
   // Every run started in this session (newest last). Runs keep going while you're on the main
   // menu; the menu lists the ones still running.
   runs: RunEntry[]
@@ -111,20 +131,32 @@ const setLife = (runs: RunEntry[], id: string, life: RunLife) =>
   runs.map((r) => (r.id === id ? { ...r, life } : r))
 
 export const useRunStore = create<RunState>()((set, get) => ({
+  commandState: null,
+  setCommandState: (commandState) => set({ commandState }),
   manual: {},
   setManual: async (runId, manual, before) => {
     set((s) => ({ manual: { ...s.manual, [runId]: manual } }))
     if (isLocalRun(runId)) return // nothing on the backend to tell
     try {
       const run = await setManualMode(runId, manual)
-      set((s) => ({ manual: { ...s.manual, [runId]: run?.manual ?? manual } }))
-      return run ?? undefined
+      // Only while its tree is on screen to take it: otherwise a later mount would lay this (by then
+      // stale) run over the fresh snapshot.
+      set((s) => ({
+        manual: { ...s.manual, [runId]: run?.manual ?? manual },
+        ...(run && s.viewingId === runId ? { manualReply: run } : {}),
+      }))
     } catch (err) {
       if (isOffline(err)) return // no backend: the switch just stays as set
       set((s) => ({ manual: { ...s.manual, [runId]: before } })) // the backend refused: put it back
       throw err
     }
   },
+  serverManual: {},
+  setServerManual: (runId, manual) =>
+    set((s) => (s.serverManual[runId] === manual ? {} : { serverManual: { ...s.serverManual, [runId]: manual } })),
+  manualReply: null,
+  draftManual: false,
+  setDraftManual: (draftManual) => set({ draftManual }),
   runs: [],
   viewingId: null,
   runVaultOpen: false,
@@ -135,6 +167,8 @@ export const useRunStore = create<RunState>()((set, get) => ({
     set((s) => ({
       // A poll (syncRuns) may have picked the new run up already: replace that entry, don't add a second.
       runs: [...s.runs.filter((r) => r.id !== runId), { id: runId, question, life: 'running', startedAt: Date.now() }],
+      // It was started with the main menu's switch as it is now.
+      manual: { ...s.manual, [runId]: s.draftManual },
       viewingId: runId,
       runVaultOpen: false,
       error: null,

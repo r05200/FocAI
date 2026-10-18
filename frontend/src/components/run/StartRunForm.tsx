@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
-import { addInstruction, createRunVault, isOffline, startRun } from '../../api/client'
+import { addInstruction, answerQuestion, createRunVault, isOffline, preflightRun, startRun } from '../../api/client'
 import { useDirectivesIn } from '../../hooks/useDirectives'
 import { useVaultPeople } from '../../hooks/useVaultGraph'
 import { isLocalRun, newLocalRunId } from '../../lib/localRun'
@@ -7,7 +7,7 @@ import { SAMPLE_DIRECTIVES, SAMPLE_PEOPLE } from '../../fixtures/seed'
 import { personColor } from '../../lib/colors'
 import { useVaultStore } from '../../store/vaultStore'
 import { selectPhase, useRunStore } from '../../store/runStore'
-import type { StartRunRequest } from '../../types'
+import type { ExecutionPlan, StartRunRequest } from '../../types'
 import { ArrowRightIcon, CloseIcon, DirectiveIcon, FileIcon, PauseIcon, PlayIcon, PlusIcon, StopIcon } from '../ui/Icons'
 import AddPathDialog from './AddPathDialog'
 import Dropdown from '../ui/Dropdown'
@@ -30,6 +30,17 @@ const QUESTION_MIN = 3
 const QUESTION_MAX = 2000
 // The backend takes at most this many paths per run.
 const PATHS_MAX = 50
+// How long typing must pause before the preflight asks the backend (each ask is an LLM call).
+const PREFLIGHT_DELAY_MS = 1200
+
+// `at`: when the answer came (Date.now()), to tell whether it predates the files' last possible edit.
+type Preflight =
+  | { key: string; status: 'loading' }
+  | { key: string; status: 'ok'; plan: ExecutionPlan; at: number }
+  | { key: string; status: 'error'; error: string; at: number }
+  | { key: string; status: 'offline'; at: number } // no backend (or no preflight route): nothing to say
+
+const fileList = (files: string[]) => files.map((f) => `\`${f}\``).join(', ')
 
 // Single-row prompt bar: [+ menu] [question] [send/stop]. The + spins into an × while its menu
 // is open. "Directives" picks standing directives from one or more vaults; they show as a chip
@@ -83,6 +94,58 @@ export default function StartRunForm({ ended = false, textHidden = false }: { en
   // Pause/Play shows once a run is going (and stays, disabled, while it's being stopped).
   const canHold = phase === 'running' || phase === 'paused'
 
+  // Preflight (main screen, with files attached): the backend's LLM reads the question and the files
+  // for the execution order and the run command, and names the files the text needs that aren't
+  // attached. Asked once typing pauses. Answers are kept by question/path set, so going back to one
+  // already asked (e.g. undoing an edit) costs no second LLM call; a failed one is asked again.
+  // The files' contents aren't in the key, so an answer from before the window last got focus
+  // (the user may have edited a file elsewhere) is asked again; the old one shows until the new comes.
+  const [preflights, setPreflights] = useState<Record<string, Preflight>>({})
+  const setPreflight = (p: Preflight) => setPreflights((all) => ({ ...all, [p.key]: p }))
+  const [focusedAt, setFocusedAt] = useState(0)
+  useEffect(() => {
+    const onFocus = () => setFocusedAt(Date.now())
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [])
+  const preflightKey = onMainScreen && paths.length > 0 && prompt.trim().length >= QUESTION_MIN
+    ? JSON.stringify([prompt.trim(), paths])
+    : null
+  const cachedPreflight = preflightKey ? preflights[preflightKey] : undefined
+  const hasPreflight = !!cachedPreflight && cachedPreflight.status !== 'error'
+    && cachedPreflight.status !== 'loading' && cachedPreflight.at >= focusedAt
+  // An answer for another question/path set is never shown: until this one's comes, it's loading.
+  const shownPreflight: Preflight | null = !preflightKey
+    ? null
+    : (cachedPreflight ?? { key: preflightKey, status: 'loading' })
+  useEffect(() => {
+    if (!preflightKey || hasPreflight) return
+    const [question, files] = JSON.parse(preflightKey) as [string, string[]]
+    let current = true
+    const t = setTimeout(() => {
+      preflightRun({ question, paths: files })
+        .then((plan) => current && setPreflight({ key: preflightKey, status: 'ok', plan, at: Date.now() }))
+        .catch((err) => {
+          if (!current) return
+          const at = Date.now()
+          // No backend (or no preflight route): say nothing rather than a false warning.
+          if (isOffline(err)) return setPreflight({ key: preflightKey, status: 'offline', at })
+          setPreflight({ key: preflightKey, status: 'error', error: err instanceof Error ? err.message : String(err), at })
+        })
+    }, PREFLIGHT_DELAY_MS)
+    return () => {
+      current = false
+      clearTimeout(t)
+    }
+  }, [preflightKey, hasPreflight, focusedAt])
+
+  // In a run: its command state, published by its tree. The run waits on the "command" question
+  // until it's answered; while it does, what's typed in the bar is that answer. One answered from
+  // here is done with at once, not when the stream says so (Enter again would get a 409).
+  const commandState = useRunStore((s) => (s.commandState?.runId === s.viewingId ? s.commandState : null))
+  const [answered, setAnswered] = useState<string | null>(null) // `${runId} ${questionId}`
+  const answeredHere = !!commandState?.question && answered === `${commandState.runId} ${commandState.question.id}`
+  const commandQuestion = answeredHere ? null : (commandState?.question ?? null)
   async function togglePause() {
     setError(null)
     try {
@@ -161,6 +224,8 @@ export default function StartRunForm({ ended = false, textHidden = false }: { en
         .filter((d) => !(remoteNow.status === 'ok' && SAMPLE_DIRECTIVE_IDS.has(d.id)))
         .map((d) => d.text),
       ...(paths.length > 0 ? { paths } : {}),
+      // The main menu's manual mode switch, as it is now.
+      manual: useRunStore.getState().draftManual,
     }
     try {
       const run = await startRun(body)
@@ -185,6 +250,27 @@ export default function StartRunForm({ ended = false, textHidden = false }: { en
     setDirTouched(false)
     setPrompt('')
     if (textarea.current) textarea.current.style.height = 'auto'
+  }
+
+  // While the run waits on its command question, Enter sends what's typed as the answer.
+  async function sendCommand() {
+    const text = prompt.trim()
+    const runId = useRunStore.getState().viewingId
+    if (!text || !commandQuestion || !runId || sending) return
+    setError(null)
+    setSending(true)
+    try {
+      await answerQuestion(runId, commandQuestion.id, text)
+    } catch (err) {
+      setSending(false)
+      return setError(err instanceof Error ? err.message : 'Could not send the command.')
+    }
+    setSending(false)
+    setAnswered(`${runId} ${commandQuestion.id}`)
+    if (useRunStore.getState().viewingId === runId) setPrompt('')
+    setNote('Command sent.')
+    if (textarea.current) textarea.current.style.height = 'auto'
+    setTimeout(() => setNote(null), 2500)
   }
 
   // While a run is going, Enter sends what's typed as a further instruction to it
@@ -221,7 +307,7 @@ export default function StartRunForm({ ended = false, textHidden = false }: { en
       // Enter sends; it never stops a run (too easy to hit by accident). While a run is going it
       // sends an instruction to that run.
       if (!busy) e.currentTarget.form?.requestSubmit()
-      else if (canHold) void sendInstruction()
+      else if (canHold) void (commandQuestion ? sendCommand() : sendInstruction())
     }
   }
 
@@ -374,7 +460,15 @@ export default function StartRunForm({ ended = false, textHidden = false }: { en
             ref={textarea}
             rows={1}
             value={prompt}
-            placeholder={ended ? 'This run has ended' : canHold ? 'Send an instruction to this run…' : 'Ask a research question…'}
+            placeholder={
+              ended
+                ? 'This run has ended'
+                : canHold && commandQuestion
+                  ? 'Command that runs one experiment, e.g. uv run experiment.py'
+                  : canHold
+                    ? 'Send an instruction to this run…'
+                    : 'Ask a research question…'
+            }
             disabled={ended}
             aria-label="Research question"
             onChange={(e) => onInput(e.target.value)}
@@ -430,6 +524,28 @@ export default function StartRunForm({ ended = false, textHidden = false }: { en
         </div>
       )}
     </form>
+    {/* Under the bar: what the backend read about running the experiments. In a run it's plain red
+        text that fades in (the strip above the tree grows to fit it, see RunTab); a missing command
+        is answered in the bar itself. */}
+    {onMainScreen && shownPreflight && <PreflightNotice preflight={shownPreflight} />}
+    {!onMainScreen && commandState && commandState.hasFiles && (() => {
+      const { plan, commandKnown } = commandState
+      const question = commandQuestion
+      // No command: the run is asking for one, or the plan found none (e.g. a run that ended without).
+      const unknown = !!question || (!!plan && !commandKnown && !answeredHere)
+      const unreadable = plan?.unreadable ?? []
+      const missing = plan?.missing_files ?? []
+      if (!unknown && unreadable.length === 0 && missing.length === 0) return null
+      return (
+        <div className="mt-2 w-full max-w-3xl animate-[fade-in_400ms_ease-out_both] space-y-1 px-4 text-xs text-kind-correction">
+          {unknown && (
+            <p role="alert" className="font-medium">Execution commands unknown</p>
+          )}
+          {unreadable.length > 0 && <p>The agent couldn’t read {fileList(unreadable)} while forming hypotheses.</p>}
+          {missing.length > 0 && <p>Named in your prompt or files but not attached: {fileList(missing)}.</p>}
+        </div>
+      )
+    })()}
     {/* Outside the <form> on purpose: a dialog is still a DOM child of it, so pressing Enter on one
         of the picker's checkboxes would "implicitly submit" the prompt (starting or stopping a run). */}
     {pathOpen && (
@@ -457,5 +573,58 @@ export default function StartRunForm({ ended = false, textHidden = false }: { en
       />
     )}
     </>
+  )
+}
+
+// Main screen, files attached: the execution order the backend read, in red when the run command is
+// unknown or the text names files that aren't attached (the run would stop to ask, or work blind).
+function PreflightNotice({ preflight }: { preflight: Preflight }) {
+  if (preflight.status === 'offline') return null
+  if (preflight.status === 'loading') {
+    return <p className="mt-2 px-4 text-xs text-muted">Reading the execution order from your prompt and files…</p>
+  }
+  if (preflight.status === 'error') {
+    return <p className="mt-2 px-4 text-xs text-muted">Couldn’t read the execution order: {preflight.error}</p>
+  }
+  const { plan } = preflight
+  return (
+    <div className="mt-2 space-y-1 px-4 text-xs">
+      {plan.command_known ? (
+        <p className="text-muted">
+          Run command: <code className="font-mono text-fg">{plan.run_command}</code>
+        </p>
+      ) : (
+        <p role="alert" className="text-kind-correction">
+          <span className="font-medium">Execution commands unknown</span>
+          {plan.why ? ` (${plan.why})` : ''}. Write the command that runs one experiment in your prompt, or the run
+          will stop to ask for it.
+        </p>
+      )}
+      {plan.missing_files.length > 0 && (
+        <p className="text-kind-correction">
+          Named in your prompt or files but not attached: {fileList(plan.missing_files)}. Attach them so the plan can
+          read them.
+        </p>
+      )}
+      {plan.steps.length > 0 && (
+        <details className="text-muted">
+          <summary className="cursor-pointer select-none hover:text-fg">Execution order ({plan.steps.length} steps)</summary>
+          <ol className="mt-1 list-decimal space-y-0.5 pl-5">
+            {plan.steps.map((s, i) => (
+              <li key={i}>
+                {s.purpose}
+                {s.command && (
+                  <>
+                    {': '}
+                    <code className={`font-mono ${s.verified ? 'text-fg' : 'text-kind-correction'}`}>{s.command}</code>
+                    {!s.verified && ' (not found word for word)'}
+                  </>
+                )}
+              </li>
+            ))}
+          </ol>
+        </details>
+      )}
+    </div>
   )
 }

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { selectRunning, useRunStore } from '../../store/runStore'
 import { ArrowLeftIcon } from '../ui/Icons'
 import RunVaultTab from '../runvault/RunVaultTab'
+import ManualSwitch from './ManualSwitch'
 import StartRunForm from './StartRunForm'
 import TreeCanvas from './TreeCanvas'
 
@@ -17,6 +18,16 @@ const MENU_SETTLE_MS = 1200 // after going back, wait for the prompt bar to near
 // How long the prompt bar takes to move between the middle and the top (its transition below).
 const BAR_MOVE_MS = 1500
 const BAR_H = 54 // the bar's height with one line of text, until it is measured
+const BAR_TOP = 16 // the bar's distance from the top while a run is on screen
+// The strip above the tree is at least this tall; it grows with the bar (e.g. a notice under it),
+// keeping TREE_GAP between the bar's bottom and the tree.
+const TREE_TOP_MIN = 80
+const TREE_GAP = 10
+// The bar's width while a run is on screen (its max-width below), and its side padding (px-4).
+const RUN_BAR_W = 'min(48rem, max(320px, 100% - 400px))'
+const BAR_PAD = 16
+const SWITCH_GAP = 64 // between the bar's right edge and the manual mode switch, in a run
+const SWITCH_W = 140 // room the switch needs from the right edge (its width plus a margin)
 
 export default function RunTab({ active }: { active: boolean }) {
   const viewingId = useRunStore((s) => s.viewingId)
@@ -48,6 +59,28 @@ export default function RunTab({ active }: { active: boolean }) {
   // (e.g. opened from History) has nothing to send to, so the bar stays but is disabled.
   const viewedLife = runs.find((r) => r.id === viewingId)?.life
   const barDisabled = started && viewedLife === 'ended'
+
+  // Manual mode. Main menu: the switch under the bar, for the next run (sent when it starts). In a
+  // run: the switch right of the bar, for that run (what this browser set, else what the run says).
+  const draftManual = useRunStore((s) => s.draftManual)
+  const setDraftManual = useRunStore((s) => s.setDraftManual)
+  const runManual = useRunStore((s) =>
+    s.viewingId ? (s.manual[s.viewingId] ?? s.serverManual[s.viewingId] ?? false) : false,
+  )
+  const setManual = useRunStore((s) => s.setManual)
+  const [manualError, setManualError] = useState<string | null>(null)
+  const [manualErrorFor, setManualErrorFor] = useState(viewingId)
+  if (manualErrorFor !== viewingId) {
+    setManualErrorFor(viewingId)
+    setManualError(null)
+  }
+  function toggleRunManual() {
+    if (!viewingId) return
+    setManualError(null)
+    setManual(viewingId, !runManual, runManual).catch((err) =>
+      setManualError(err instanceof Error ? err.message : 'Could not change manual mode.'),
+    )
+  }
 
   // Learn about runs from the backend: once on arrival, then every few seconds while any run is
   // going (the live event stream isn't built, so polling GET /runs is how we notice a run ended).
@@ -99,9 +132,11 @@ export default function RunTab({ active }: { active: boolean }) {
       {treeId && (
         <div
           key={treeId}
-          className={`absolute inset-x-0 top-20 bottom-0 transition-opacity duration-300 ${
+          className={`absolute inset-x-0 bottom-0 transition-[opacity,top] duration-300 ease-out ${
             started ? 'opacity-100' : 'opacity-0'
           }`}
+          // Only once the bar is up top: on the main menu its height says nothing about the strip.
+          style={{ top: started && !barMoving ? Math.max(TREE_TOP_MIN, BAR_TOP + barH + TREE_GAP) : TREE_TOP_MIN }}
           onTransitionEnd={(e) => {
             if (e.target === e.currentTarget && !useRunStore.getState().viewingId) setTreeId(null)
           }}
@@ -152,6 +187,35 @@ export default function RunTab({ active }: { active: boolean }) {
           Describe the question you want researched.
         </p>
 
+        {/* Main menu: manual mode for the next run, under the hint. It fades out with the heading
+            as the bar moves up; its setting stays for the next time. */}
+        <div
+          inert={started}
+          style={{ top: `calc(50% + ${barH / 2 + 45}px)` }}
+          className={`absolute left-1/2 -translate-x-1/2 transition-opacity ${
+            started ? 'pointer-events-none opacity-0 duration-250' : 'pointer-events-auto opacity-100 duration-300 delay-[1200ms]'
+          }`}
+        >
+          <ManualSwitch on={draftManual} onToggle={() => setDraftManual(!draftManual)} />
+        </div>
+
+        {/* In a run: that run's manual mode, in the strip above the tree, SWITCH_GAP right of the bar
+            (level with its first line). Appears once the bar has arrived. */}
+        <div
+          inert={!started || runVaultOpen}
+          style={{
+            top: BAR_TOP,
+            height: BAR_H,
+            // Kept inside the window when it's too narrow for the full gap.
+            left: `min(calc(50% + ${RUN_BAR_W} / 2 - ${BAR_PAD}px + ${SWITCH_GAP}px), calc(100% - ${SWITCH_W}px))`,
+          }}
+          className={`absolute flex items-center transition-opacity ${
+            started ? 'pointer-events-auto opacity-100 duration-300 delay-[1200ms]' : 'pointer-events-none opacity-0 duration-150'
+          }`}
+        >
+          <ManualSwitch on={runManual} onToggle={toggleRunManual} disabled={barDisabled} error={manualError} />
+        </div>
+
         {/* The prompt bar: centred on the main menu, 16px from the top once a run is on screen. */}
         <div
           ref={bar}
@@ -160,7 +224,7 @@ export default function RunTab({ active }: { active: boolean }) {
             barDisabled ? 'pointer-events-none opacity-50' : 'pointer-events-auto'
           }`}
           style={{
-            top: started ? 16 : '50%',
+            top: started ? BAR_TOP : '50%',
             transform: `translate(-50%, ${started ? '0%' : '-50%'})`,
           }}
         >

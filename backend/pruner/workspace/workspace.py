@@ -25,6 +25,7 @@ import json
 import os
 import shutil
 import threading
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
 from pruner.core.config import Config, get_config
@@ -55,6 +56,44 @@ def _text(data: bytes | None) -> str | None:
         return data.decode("utf-8")
     except UnicodeDecodeError:
         return None
+
+
+# The attached files' texts the objectives and the execution planner read (per file, in total).
+# A long spec such as a program.md often names its commands past the first few thousand chars.
+ATTACH_EACH = 8000
+ATTACH_TOTAL = 24_000
+
+
+def attachments_text(roots: Roots, read: Callable[[str], str | None], each: int = ATTACH_EACH,
+                     total: int = ATTACH_TOTAL) -> dict[str, str]:
+    """The listed files, plus README* files at the top of each given folder, read with `read`
+    (relative path -> text or None). Capped per file and in total."""
+    names = list(roots.editable_files)
+    for d in roots.editable_dirs:
+        base = roots.root / d
+        names += [(Path(d) / p.name).as_posix() for p in sorted(base.glob("README*"))
+                  if p.is_file()]
+    out: dict[str, str] = {}
+    budget = total
+    for rel in dict.fromkeys(names):
+        if budget <= 0:
+            break
+        text = read(rel)
+        if text:
+            out[rel] = text[: min(each, budget)]
+            budget -= len(out[rel])
+    return out
+
+
+def read_from_disk(roots: Roots, rel: str) -> str | None:
+    """A readable file's text straight from disk (no workspace yet: the run's preflight)."""
+    rel = safe_rel(roots, rel)
+    if not roots.is_readable(rel):
+        return None
+    path = roots.root / rel
+    if not path.is_file() or path.stat().st_size > READ_MAX_BYTES:
+        return None
+    return _text(path.read_bytes())
 
 
 class WorkspaceConflict(OSError):
@@ -152,24 +191,10 @@ class Workspace:
             return None
         return _text(path.read_bytes())
 
-    def attachments_text(self, each: int = 4000, total: int = 12_000) -> dict[str, str]:
+    def attachments_text(self, each: int = ATTACH_EACH, total: int = ATTACH_TOTAL) -> dict[str, str]:
         """Texts the command may be quoted from: explicitly listed files, plus README* files at
         the top of each given folder. Capped per file and in total."""
-        names = list(self.info.editable_files)
-        for d in self.info.editable_dirs:
-            base = self.roots.root / d
-            names += [(Path(d) / p.name).as_posix() for p in sorted(base.glob("README*"))
-                      if p.is_file()]
-        out: dict[str, str] = {}
-        budget = total
-        for rel in dict.fromkeys(names):
-            if budget <= 0:
-                break
-            text = self.read(rel)
-            if text:
-                out[rel] = text[: min(each, budget)]
-                budget -= len(out[rel])
-        return out
+        return attachments_text(self.roots, self.read, each, total)
 
     # ---- versions
 

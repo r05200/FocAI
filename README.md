@@ -6,7 +6,7 @@ Agents explore, humans steer, and the tree shows everyone what is happening and 
 - **Run tab:** a live tree of the agent's work. Branches are scored against the person's own
   vault, then kept or parked with a reason. Humans can keep, park, restore and answer questions.
 - **Vault tab:** a mind map of what a person has read, noted or asked. The agent searches it, so
-  "relevant" means relevant *and new to this person*.
+  "relevant" means relevant _and new to this person_.
 
 **Status:** the vault backend works end to end (ingest with LLM title/blurb/tags, embeddings,
 similarity links labelled contradicts / supports / agrees / investigate / unrelated). The agent, tree and UI
@@ -70,15 +70,10 @@ cd backend && uv run python -m pruner.fixtures
 The tree search with pruning on both sides of an experiment (a pre-score before it runs, a
 post-score after) is inspired by ToolTree:
 
-> Shuo Yang, Soyeon Caren Han, Yihao Ding, Shuhe Wang and Eduard Hovy. *ToolTree: Efficient LLM
-> Agent Tool Planning via Dual-Feedback Monte Carlo Tree Search and Bidirectional Pruning.*
+> Shuo Yang, Soyeon Caren Han, Yihao Ding, Shuhe Wang and Eduard Hovy. _ToolTree: Efficient LLM
+> Agent Tool Planning via Dual-Feedback Monte Carlo Tree Search and Bidirectional Pruning._
 > ICLR 2026. [arXiv:2603.12740](https://arxiv.org/abs/2603.12740)
 
 ToolTree plans an LLM agent's tool use with an MCTS-style search, guiding it with pre-execution
 priors and post-execution rewards and pruning weak branches before and after a tool runs. This
 project applies that idea to research hypotheses instead of tool calls.
-
-## Prior art
-
-Other citations are collected in the PRD and must be verified against the original sources before
-submission; several arXiv IDs are marked unchecked. Not yet written up here.

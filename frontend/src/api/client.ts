@@ -6,6 +6,7 @@ import type {
   CreateVaultRequest,
   Directive,
   DirectiveRequest,
+  ExecutionPlan,
   ForkRequest,
   IngestRequest,
   IngestResult,
@@ -14,7 +15,9 @@ import type {
   LogEntry,
   PauseResult,
   Position,
+  PreflightRequest,
   PrunerEvent,
+  Question,
   Suggestion,
   HumanAction,
   PromptInfo,
@@ -106,6 +109,14 @@ export const deleteDirective = (directiveId: string) =>
 // ---- runs
 // 202 -> the new Run. The agent works in the background: follow it with getRun + streamRunEvents.
 export const startRun = (body: StartRunRequest) => request<Run>('POST', '/runs', body)
+// Before a run starts: the execution order the backend's LLM reads from the question and the files,
+// whether the run command is known, and the files the text names that aren't attached. Changes
+// nothing. 422 for a bad path, 502 if the LLM fails.
+export const preflightRun = (body: PreflightRequest) => request<ExecutionPlan>('POST', '/runs/preflight', body)
+// Answer a run's question. For the "command" question the answer becomes the experiment command
+// exactly as typed, and the run carries on. 409 if already answered or the run finished.
+export const answerQuestion = (runId: string, questionId: string, answer: string) =>
+  request<Question>('POST', `/runs/${id(runId)}/questions/${id(questionId)}/answer`, { answer })
 export const listRuns = () => request<Run[]>('GET', '/runs')
 // The run's current state, its whole tree included. Note the backend saves it at level boundaries,
 // so between those it can lag behind the event stream.

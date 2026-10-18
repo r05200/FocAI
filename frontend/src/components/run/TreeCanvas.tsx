@@ -9,16 +9,17 @@ import { useForks } from '../../hooks/useForks'
 import { useRunTree } from '../../hooks/useRunTree'
 import { isTyping, useSpacePan } from '../../hooks/useSpacePan'
 import { nodeState } from '../../lib/nodeStatus'
-import { CHOSEN_DRAW_MS, drawDelay, now, popDelay, popMs, PULSE_MS, pulsePhase, scheduleAppearance, type AppearSchedule } from '../../lib/treeAppear'
+import { CHOSEN_DRAW_MS, choiceLine, drawDelay, now, popDelay, popMs, PULSE_MS, pulsePhase, scheduleAppearance, type AppearSchedule } from '../../lib/treeAppear'
 import { chosenIds, isCandidate, withConclusions } from '../../lib/treePaths'
 import { layoutTree } from '../../lib/treeLayout'
 import type { HumanAction, TreeNode } from '../../types'
 import { useRunStore } from '../../store/runStore'
 import { useUiStore, type TreeTool } from '../../store/uiStore'
-import { CursorIcon, FileIcon, HandIcon, IdeasIcon, ResetViewIcon } from '../ui/Icons'
+import { BellIcon, CursorIcon, FileIcon, HandIcon, IdeasIcon, ResetViewIcon } from '../ui/Icons'
 import TreeEdge, { type EdgeState, type TreeEdgeType } from './TreeEdge'
 import ConclusionPanel from './ConclusionPanel'
 import PatchPanel from './PatchPanel'
+import { choiceNodes, pendingCount } from '../../lib/runInbox'
 import RunCards from './RunCards'
 import NodeLogsPanel from './NodeLogsPanel'
 import NodePanel from './NodePanel'
@@ -39,6 +40,8 @@ const MIN_ZOOM = 0.75
 const MAX_ZOOM = 2
 // The toolbar appears once the prompt bar has finished moving to the top (RunTab: 1500ms).
 const TOOLBAR_AFTER_MS = 1500
+// The notifications panel's width (it slides out from the right edge).
+const INBOX_W = 340
 
 // popDelay / popMs: when (relative to mounting) and how long the node pops in. chosen: on the
 // chosen path. faint: still undecided. ripple: the run is going and the branch is still in play,
@@ -51,9 +54,12 @@ type TreeNodeData = {
   chosen: boolean
   faint: boolean
   ripple: boolean
-  // Manual mode: its proposals wait for a person's choice (yellow ring). `ringAfterMs`: when the
-  // ring starts tracing round, once the yellow line into the node has arrived.
-  awaiting: boolean
+  // Manual mode: this is one of the proposals the run waits on a person to choose between (a yellow
+  // ring pulses round it). `choiceAt`: wall-clock ms when the yellow line into it starts drawing;
+  // `ringAfterMs`: how long after that the ring starts tracing round (the line has arrived and the
+  // node has popped in).
+  choice: boolean
+  choiceAt: number
   ringAfterMs: number
 }
 type FlowNode = Node<TreeNodeData, 'tree'>
@@ -70,19 +76,27 @@ const STATUS_RING: Record<TreeNode['status'], string> = {
 // node's popup. The tree grows left to right, so edges come in on the circle's left and leave on its
 // right (the handles only anchor them).
 function TreeNodeView({ data, selected }: NodeProps<FlowNode>) {
-  const { node, isRoot, popDelay, popMs, chosen, faint, ripple, awaiting, ringAfterMs } = data
+  const { node, isRoot, popDelay, popMs, chosen, faint, ripple, choice, choiceAt, ringAfterMs } = data
+  // Once a choice, its yellow ring stays to hand over: picked, it waits for the blue line to arrive
+  // (and the circle turns blue then); dropped, it fades at once.
+  const [wasChoice, setWasChoice] = useState(choice)
+  if (choice && !wasChoice) setWasChoice(true)
+  const picked = wasChoice && !choice && chosen
   const ring = isRoot
     ? node.status === 'running' ? STATUS_RING.running : 'border-fg'
     : chosen ? 'border-kind-paper' : STATUS_RING[node.status]
   // The pop-in scales the circle and label only: React Flow measures where the handles are when the
   // node mounts, so they must not be inside anything that's scaled down at that moment.
-  const pop = { animation: `node-pop ${popMs}ms var(--ease-zoom) ${popDelay}ms both` }
+  const pop = {
+    animation: `node-pop ${popMs}ms var(--ease-zoom) ${popDelay}ms both`,
+    ...(picked ? { transition: `border-color 300ms ease-out ${CHOSEN_DRAW_MS}ms` } : {}),
+  }
   return (
     // Faintness is on the wrapper: the pop-in animation owns the circle's own opacity.
     <div className={`flex w-36 flex-col items-center transition-opacity duration-500 ${faint ? 'opacity-45' : ''}`}>
       <div className="relative">
         {ripple && <Ripple />}
-        {awaiting && <AwaitingRing afterMs={ringAfterMs} />}
+        {wasChoice && <ChoiceRing at={choiceAt} afterMs={ringAfterMs} ending={choice ? null : picked ? CHOSEN_DRAW_MS : 0} />}
         <Handle type="target" position={Position.Left} className="opacity-0!" isConnectable={false} />
         <div
           aria-label={isRoot ? 'Root' : node.description}
@@ -169,9 +183,11 @@ function withLocalAction(n: TreeNode, action: HumanAction | undefined): TreeNode
   return n
 }
 
-// Manual mode's waiting node: a yellow ring traces once round the circle from the top (after the
-// yellow line into the node has arrived, `afterMs`), then pulses lightly until the choice is made.
-function AwaitingRing({ afterMs }: { afterMs: number }) {
+// Manual mode's choice: a yellow ring traces once round the circle from the top, `afterMs` after the
+// yellow line into the node starts drawing (wall clock `at`; at once if that's past), then pulses
+// until the choice is made. `ending`: the choice is over; the ring fades out after that many ms.
+function ChoiceRing({ at, afterMs, ending }: { at: number; afterMs: number; ending: number | null }) {
+  const [delay] = useState(() => Math.max(0, at - now()) + afterMs)
   return (
     <svg
       aria-hidden="true"
@@ -189,7 +205,10 @@ function AwaitingRing({ afterMs }: { afterMs: number }) {
         pathLength={1}
         strokeDasharray="1"
         style={{
-          animation: `edge-draw ${RING_TRACE_MS}ms var(--ease-zoom) ${afterMs}ms both, ring-pulse 2000ms ease-in-out ${afterMs + RING_TRACE_MS}ms infinite`,
+          animation:
+            ending === null
+              ? `edge-draw ${RING_TRACE_MS}ms var(--ease-zoom) ${delay}ms both, ring-pulse 2000ms ease-in-out ${delay + RING_TRACE_MS}ms infinite`
+              : `fade-out 300ms ease-out ${ending}ms both`,
         }}
       />
     </svg>
@@ -273,6 +292,28 @@ function TreeCanvasView({ runId, question, startedAt, active, live, onOpenRunVau
     (snapshot?.run.awaiting === 'fork' ? (forks.find((f) => f.status === 'requested') ?? null) : null)
   const lastFork = [...forks].reverse().find((f) => f.status === 'confirmed') ?? null
   const canAct = live && !pendingFork
+  // The run's command state, for the notice under the prompt bar (which can't see the snapshot).
+  const setCommandState = useRunStore((s) => s.setCommandState)
+  const viewedRun = snapshot?.run
+  const commandQuestion = live
+    ? (snapshot?.questions.find((q) => q.purpose === 'command' && q.status === 'pending') ?? null)
+    : null
+  useEffect(() => {
+    if (!viewedRun) return
+    setCommandState({
+      runId,
+      plan: viewedRun.plan ?? null,
+      commandKnown: !!viewedRun.command,
+      hasFiles: (viewedRun.paths?.length ?? 0) > 0,
+      question: viewedRun.awaiting === 'command' ? commandQuestion : null,
+    })
+  }, [runId, viewedRun, commandQuestion, setCommandState])
+  useEffect(
+    () => () => {
+      if (useRunStore.getState().commandState?.runId === runId) setCommandState(null)
+    },
+    [runId, setCommandState],
+  )
   // Keep / park / restore done here while there's no backend to take them (a run that only exists
   // in the browser, or the backend unreachable): shown on the node all the same.
   const [localActions, setLocalActions] = useState<ReadonlyMap<string, HumanAction>>(new Map())
@@ -339,6 +380,8 @@ function TreeCanvasView({ runId, question, startedAt, active, live, onOpenRunVau
   }
 
   const chosen = useMemo(() => chosenIds(treeNodes), [treeNodes])
+  // Manual mode: the proposals the run waits on a choice between (yellow, until one is picked).
+  const choices = useMemo(() => new Set(choiceNodes(treeNodes).map((n) => n.id)), [treeNodes])
 
   // Laid out automatically; positions a person dragged are kept when new nodes arrive.
   const layoutNodes = useMemo((): FlowNode[] => {
@@ -352,6 +395,8 @@ function TreeCanvasView({ runId, question, startedAt, active, live, onOpenRunVau
       // (48px) line up on the same row.
       const r = isRoot ? 40 : 24
       const a = appear.get(n.id)
+      const choice = choices.has(n.id)
+      const line = a ? choiceLine(a) : { at: 0, ms: CHOSEN_DRAW_MS, unfold: false }
       return {
         id: n.id,
         type: 'tree',
@@ -362,14 +407,16 @@ function TreeCanvasView({ runId, question, startedAt, active, live, onOpenRunVau
           popDelay: a ? popDelay(a) : 0,
           popMs: a ? popMs(a) : 0,
           chosen: chosen.has(n.id),
-          faint: !isRoot && isCandidate(n, chosen) && n.status !== 'running',
-          ripple: live && !isRoot && isCandidate(n, chosen),
-          awaiting: !!n.awaiting_choice,
-          ringAfterMs: isRoot ? 0 : CHOSEN_DRAW_MS,
+          faint: !isRoot && !choice && isCandidate(n, chosen) && n.status !== 'running',
+          ripple: live && !isRoot && !choice && isCandidate(n, chosen),
+          choice,
+          choiceAt: line.at,
+          // Unfolding, the node pops in once its line is drawn: the ring waits for that too.
+          ringAfterMs: line.ms + (line.unfold && a ? popMs(a) : 0),
         },
       }
     })
-  }, [treeNodes, appear, chosen, live])
+  }, [treeNodes, appear, chosen, choices, live])
   // Controlled nodes need their change handler, or dragging a node has no effect.
   const [nodes, setNodes, applyNodeChanges] = useNodesState<FlowNode>(layoutNodes)
   // Nodes a person dragged keep their spot; every other node follows the layout as the tree grows
@@ -441,6 +488,8 @@ function TreeCanvasView({ runId, question, startedAt, active, live, onOpenRunVau
           const state: EdgeState = chosen.has(n.id)
             ? 'chosen'
             : n.status === 'parked' ? 'parked' : n.status === 'failed' ? 'stopped' : 'candidate'
+          const choice = choices.has(n.id)
+          const line = a ? choiceLine(a) : { at: 0, ms: CHOSEN_DRAW_MS }
           return {
             id: `${n.parent_id}-${n.id}`,
             source: n.parent_id!,
@@ -452,10 +501,12 @@ function TreeCanvasView({ runId, question, startedAt, active, live, onOpenRunVau
               appearDelay: a ? popDelay(a) : 0,
               drawDelay: a ? drawDelay(a) : null,
               pulsing: live,
-              awaiting: !!n.awaiting_choice,
+              choice,
+              choiceAt: line.at,
+              choiceMs: line.ms,
             },
-            // The yellow line to a node waiting for a choice goes over everything else.
-            zIndex: n.awaiting_choice ? 11 : state === 'chosen' ? 10 : 0,
+            // The yellow line to a choice goes over everything else.
+            zIndex: choice ? 11 : state === 'chosen' ? 10 : 0,
           }
         })
         .concat(
@@ -484,7 +535,7 @@ function TreeCanvasView({ runId, question, startedAt, active, live, onOpenRunVau
                 }))
             }),
         ),
-    [treeNodes, appear, chosen, live],
+    [treeNodes, appear, chosen, choices, live],
   )
 
   // Popup for the clicked node, and its logs sidebar.
@@ -495,11 +546,22 @@ function TreeCanvasView({ runId, question, startedAt, active, live, onOpenRunVau
   // The run's changes to the user's files (GET /runs/{id}/patch), once it has them.
   const [patchOpen, setPatchOpen] = useState(false)
   const patchReady = !!snapshot?.run.patch_ready
-  // What this browser last set, else what the run says (e.g. after a reload, or started in it).
-  const localManual = useRunStore((s) => s.manual[runId])
-  const manualOn = localManual ?? snapshot?.run.manual ?? false
-  const setManual = useRunStore((s) => s.setManual)
-  const [manualError, setManualError] = useState<string | null>(null)
+  // Manual mode's switch lives by the prompt bar (RunTab): it's told what the run says, and the run
+  // the backend returns on a flip (awaiting "choice" or not) goes on screen here at once.
+  const setServerManual = useRunStore((s) => s.setServerManual)
+  const serverManual = snapshot?.run.manual
+  useEffect(() => {
+    if (serverManual !== undefined) setServerManual(runId, serverManual)
+  }, [runId, serverManual, setServerManual])
+  const manualReply = useRunStore((s) => s.manualReply)
+  useEffect(() => {
+    if (manualReply?.id !== runId) return
+    apply((o) => (o.run = manualReply))
+    useRunStore.setState({ manualReply: null })
+  }, [manualReply, runId, apply])
+  // The notifications panel (the bell, top right) and how many things wait on a person.
+  const [inboxOpen, setInboxOpen] = useState(false)
+  const waitingCount = snapshot ? pendingCount(treeNodes, snapshot.suggestions ?? [], pendingFork) : 0
   const selected = treeNodes.find((n) => n.id === selectedId) ?? null
   const logs = useNodeLogs(runId, selected, {
     enabled: logsOpen,
@@ -562,7 +624,7 @@ function TreeCanvasView({ runId, question, startedAt, active, live, onOpenRunVau
   return (
     // The tree and its side panel (logs or conclusion) share the row: opening one narrows the tree.
     <div className="flex h-full">
-    <div ref={area} className={`relative min-w-0 flex-1 ${panning ? 'cursor-grab active:cursor-grabbing' : ''}`}>
+    <div ref={area} className={`relative min-w-0 flex-1 overflow-hidden ${panning ? 'cursor-grab active:cursor-grabbing' : ''}`}>
       <ReactFlow
         nodes={nodes}
         onNodesChange={onNodesChange}
@@ -602,12 +664,13 @@ function TreeCanvasView({ runId, question, startedAt, active, live, onOpenRunVau
         <Background />
       </ReactFlow>
 
-      {/* Top-right corner, appearing with the toolbar: the reload (debug) and run vault buttons,
-          then the run's objectives. */}
+      {/* Top-right corner, appearing with the toolbar: the reload (debug), run vault, changes and
+          notifications buttons. They move aside with the notifications panel, like the objectives. */}
       <div
         ref={corner}
         inert={!toolbarShown}
-        className={`absolute top-3 right-5 z-10 flex items-start gap-2.5 transition-opacity duration-300 ${
+        style={{ right: inboxOpen ? INBOX_W + 20 : 20 }}
+        className={`absolute top-3 z-20 flex items-start gap-2.5 transition-[right,opacity] duration-300 ease-zoom ${
           toolbarShown ? 'opacity-100' : 'opacity-0'
         }`}
       >
@@ -650,41 +713,72 @@ function TreeCanvasView({ runId, question, startedAt, active, live, onOpenRunVau
           </button>
         )}
 
-        {/* Manual mode: on, the agent waits for a person's say-so. Always shown; flipping it tells
-            the backend (POST /runs/{id}/manual). */}
-        <label
-          title={manualError ?? 'When on, the agent waits for your say-so instead of carrying on by itself'}
-          className={`flex h-9.5 shrink-0 cursor-pointer items-center gap-2 rounded-xl border bg-elev px-3 text-sm whitespace-nowrap text-muted shadow-lg shadow-black/20 select-none ${
-            manualError ? 'border-kind-correction' : 'border-line'
+        {/* Notifications: opens the side panel with what waits on a person (the fork, manual mode's
+            choice, suggestions) and the steering instructions. The badge counts what waits. */}
+        <button
+          aria-label={waitingCount > 0 ? `Notifications (${waitingCount} waiting)` : 'Notifications'}
+          title="Notifications: what the run needs from you"
+          aria-pressed={inboxOpen}
+          aria-expanded={inboxOpen}
+          onClick={() => setInboxOpen((o) => !o)}
+          className={`relative grid size-9.5 shrink-0 place-items-center rounded-xl border bg-elev shadow-lg shadow-black/20 transition-colors hover:bg-hover hover:text-fg ${
+            inboxOpen ? 'border-fg text-fg' : 'border-line text-muted'
           }`}
         >
-          Manual mode
-          <button
-            type="button"
-            role="switch"
-            aria-checked={manualOn}
-            aria-label="Manual mode"
-            onClick={() => {
-              setManualError(null)
-              setManual(runId, !manualOn, manualOn).then(
-                // The run the backend returns (awaiting "choice" or not) goes on screen at once.
-                (run) => run && apply((o) => (o.run = run)),
-                (err) => setManualError(err instanceof Error ? err.message : 'Could not change manual mode.'),
-              )
-            }}
-            className={`flex h-4.5 w-8 shrink-0 items-center rounded-full p-0.5 transition-colors ${
-              manualOn ? 'bg-kind-paper' : 'bg-line'
-            }`}
-          >
-            <span className={`size-3.5 rounded-full bg-white transition-transform ${manualOn ? 'translate-x-3.5' : ''}`} />
-          </button>
-        </label>
+          <BellIcon width={18} height={18} />
+          {waitingCount > 0 && (
+            <span className="absolute -top-1.5 -right-1.5 grid h-4.5 min-w-4.5 animate-[node-pop_300ms_var(--ease-zoom)_both] place-items-center rounded-full bg-kind-note px-1 text-[10px] leading-none font-semibold text-black">
+              {waitingCount}
+            </span>
+          )}
+        </button>
+      </div>
 
-        <ObjectivesChecklist
-          objectives={snapshot?.run.objectives ?? []}
-          met={metObjectives(treeNodes)}
-          live={live}
-        />
+      {/* The notifications panel: slides out from the right, pushing the corner's buttons aside. Its
+          heading sits level with them. */}
+      <aside
+        aria-label="Notifications"
+        inert={!inboxOpen}
+        style={{ width: INBOX_W, paddingTop: 23 }}
+        className={`absolute inset-y-0 right-0 z-10 flex flex-col border-l border-line bg-bg shadow-xl shadow-black/20 transition-transform duration-300 ease-zoom ${
+          inboxOpen ? 'translate-x-0' : 'translate-x-full'
+        }`}
+      >
+        <h2 className="shrink-0 px-5 pb-2.5 text-xs font-semibold text-muted">Notifications</h2>
+        <div className="min-h-0 flex-1 overflow-auto px-5 pb-5">
+          {snapshot ? (
+            <RunCards
+              runId={runId}
+              suggestions={snapshot.suggestions ?? []}
+              instructions={snapshot.run.instructions}
+              nodes={treeNodes}
+              canAct={canAct}
+              live={live}
+              apply={apply}
+              pendingFork={pendingFork}
+              lastFork={lastFork}
+              onForkChanged={(fork) => apply((o) => o.forks.set(fork.id, fork))}
+              onFocusNode={(id) => {
+                setSelectedId(id)
+                setConclusionOpen(false)
+              }}
+              onNodeAction={actOnNode}
+            />
+          ) : (
+            <p className="px-1 text-xs text-muted">Nothing needs you right now.</p>
+          )}
+        </div>
+      </aside>
+
+      {/* The run's objectives, bottom right; they move aside with the notifications panel. */}
+      <div
+        inert={!toolbarShown}
+        style={{ right: inboxOpen ? INBOX_W + 20 : 20 }}
+        className={`absolute bottom-5 z-10 transition-[right,opacity] duration-300 ease-zoom ${
+          toolbarShown ? 'opacity-100' : 'opacity-0'
+        }`}
+      >
+        <ObjectivesChecklist objectives={snapshot?.run.objectives ?? []} met={metObjectives(treeNodes)} live={live} />
       </div>
 
       {selected && (
@@ -708,6 +802,7 @@ function TreeCanvasView({ runId, question, startedAt, active, live, onOpenRunVau
             setConclusionOpen(true)
           }}
           top={cornerBottom}
+          right={inboxOpen ? INBOX_W + 20 : 20}
           progress={runProgress(treeNodes, snapshot?.run.objectives ?? [])}
           isRoot={!treeNodes.some((m) => m.id === selected.parent_id)}
           onAction={(action) => actOnNode(selected.id, action)}
@@ -720,36 +815,15 @@ function TreeCanvasView({ runId, question, startedAt, active, live, onOpenRunVau
           chosen={chosen.has(selected.id) && !!selected.parent_id}
         />
       )}
-      {/* Manual mode's choice, suggestions and the steering chips (top-left). */}
-      {snapshot && toolbarShown && (
-        <RunCards
-          runId={runId}
-          suggestions={snapshot.suggestions ?? []}
-          instructions={snapshot.run.instructions}
-          nodes={treeNodes}
-          canAct={canAct}
-          live={live}
-          apply={apply}
-          pendingFork={pendingFork}
-          lastFork={lastFork}
-          onForkChanged={(fork) => apply((o) => o.forks.set(fork.id, fork))}
-          onFocusNode={(id) => {
-            setSelectedId(id)
-            setConclusionOpen(false)
-          }}
-          onNodeAction={actOnNode}
-        />
-      )}
-
       {/* Same look and spot as the vault's toolbar (top centre of the working area). */}
       <div
         role="toolbar"
         aria-label="Tree tools"
         inert={!toolbarShown}
         // Centred, unless the area is narrow (a side panel open): then it steps left, just enough to
-        // clear the top-right corner (20px margin + its width + a 12px gap + half the toolbar).
-        style={{ left: `min(50%, 100% - ${cornerWidth + 20 + 12 + 40}px)` }}
-        className={`absolute top-3 flex -translate-x-1/2 gap-1 rounded-xl border border-line bg-elev p-1 shadow-lg shadow-black/20 transition-[opacity,left] duration-300 ${
+        // clear the top-right corner (its offset + its width + a 12px gap + half the toolbar).
+        style={{ left: `min(50%, 100% - ${(inboxOpen ? INBOX_W + 20 : 20) + cornerWidth + 12 + 40}px)` }}
+        className={`absolute top-3 flex -translate-x-1/2 gap-1 rounded-xl border border-line bg-elev p-1 shadow-lg shadow-black/20 transition-[opacity,left] duration-300 ease-zoom ${
           toolbarShown ? 'opacity-100' : 'opacity-0'
         }`}
       >
