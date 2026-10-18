@@ -231,7 +231,9 @@ class LLM:
                 await asyncio.sleep(wait)
             self._last_call = time.monotonic()
 
-    async def _call_api(self, fn: Any, **kwargs: Any) -> Any:
+    async def _call_api(self, method: str, **kwargs: Any) -> Any:
+        """Call client.aio.models.<method>. It is looked up on the current client at every
+        attempt, so a switch to the backup key takes effect for the redone call."""
         from google.genai import errors
 
         scope = _scope.get()
@@ -243,7 +245,7 @@ class LLM:
             if scope in self._stopped:
                 raise LLMCancelled(f"scope {scope!r} was stopped")
             gen = self._key_gen
-            task = asyncio.ensure_future(fn(**kwargs))
+            task = asyncio.ensure_future(getattr(self.client.aio.models, method)(**kwargs))
             self._inflight[task] = scope
             try:
                 return await task
@@ -257,7 +259,6 @@ class LLM:
                 if e.code == 429 and (self._key_gen != gen or self._switch_to_backup_key()):
                     # Freeze this call and redo it on the backup key: no wait, no attempt used
                     # (also when another call already made the switch while this one was in flight).
-                    fn = getattr(self.client.aio.models, getattr(fn, "__name__", ""), fn)
                     continue
                 if e.code not in RETRYABLE_STATUS or attempt == MAX_API_ATTEMPTS - 1:
                     log.error("500 server issue: the Gemini %s API call failed (HTTP %s: %s). If "
@@ -301,7 +302,7 @@ class LLM:
 
         for _ in range(2):  # one corrective retry on invalid output
             resp = await self._call_api(
-                self.client.aio.models.generate_content,
+                "generate_content",
                 model=model,
                 contents=contents,
                 config=types.GenerateContentConfig(
@@ -372,7 +373,7 @@ class LLM:
                         function_calling_config=types.FunctionCallingConfig(mode=mode)),
                     **({"response_mime_type": "application/json",
                         "response_json_schema": response_schema} if response_schema else {}))
-                resp = await self._call_api(self.client.aio.models.generate_content,
+                resp = await self._call_api("generate_content",
                                             model=model, contents=contents, config=config)
                 if not resp.candidates or resp.candidates[0].content is None:
                     reason = (resp.candidates[0].finish_reason if resp.candidates else
@@ -429,7 +430,7 @@ class LLM:
             from google.genai import types
 
             resp = await self._call_api(
-                self.client.aio.models.embed_content,
+                "embed_content",
                 model=model,
                 contents=[texts[i] for i in missing],
                 config=types.EmbedContentConfig(task_type=task, output_dimensionality=dim),
