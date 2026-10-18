@@ -30,6 +30,93 @@ class RunView:
     workspace: Workspace | None
 
 
+METRICS_SHOWN = 6
+OTHER_BRANCHES_SHOWN = 12
+
+
+def measured(node: Node | None) -> bool:
+    return node is not None and node.experiment is not None and not node.experiment.error
+
+
+def best_node(nodes: Sequence[Node]) -> Node | None:
+    """The supported, measured node with the best judge score (then confidence), if any."""
+    good = [n for n in nodes if n.verdict == "supported" and n.status == "done" and measured(n)]
+    return max(good, key=lambda n: (n.post_score or 0.0,
+                                    n.synthesis.confidence if n.synthesis else 0.0),
+               default=None)
+
+
+def previous_measured(nodes: Sequence[Node], node: Node) -> Node | None:
+    """The nearest measured node above `node` on its path (the previous round)."""
+    for n in reversed(ancestors(nodes, node)[:-1]):
+        if measured(n):
+            return n
+    return None
+
+
+def compare_metrics(current: dict[str, float], previous: dict[str, float] | None,
+                    against: str = "", limit: int = METRICS_SHOWN) -> str:
+    """"ms=6 (-25% vs n2), mem.mb=3 (same)": the values and how each moved since `against`."""
+    parts = []
+    for key, value in list(current.items())[:limit]:
+        text = f"{key}={value:g}"
+        old = (previous or {}).get(key)
+        if old is not None:
+            if old == value:
+                text += " (same)"
+            elif old != 0:
+                text += f" ({(value - old) / abs(old):+.0%} vs {against or 'before'})"
+            else:
+                text += f" (was {old:g})"
+        parts.append(text)
+    return ", ".join(parts)
+
+
+def trend_text(nodes: Sequence[Node], node: Node) -> str:
+    """The measured values along the path to `node`, each compared with the round before it, so
+    the agent can tell whether the last step went the right way."""
+    lines, before = [], None
+    for n in ancestors(nodes, node):
+        if not measured(n):
+            continue
+        assert n.experiment is not None
+        name = "baseline" if n.parent_id is None else f"[{n.family or '-'}] {n.description}"
+        lines.append(f"- {n.id} {name}: " + (compare_metrics(
+            n.experiment.metrics, before.experiment.metrics if before and before.experiment
+            else None, before.id if before else "") or "(no numbers)"))
+        before = n
+    return "\n".join(lines) or "(nothing measured on this path yet)"
+
+
+def best_text(nodes: Sequence[Node]) -> str:
+    best = best_node(nodes)
+    if best is None or best.experiment is None:
+        return "(no supported result yet)"
+    root = next((n for n in nodes if n.parent_id is None), None)
+    base = root.experiment.metrics if measured(root) and root and root.experiment else None
+    return (f"{best.id} [{best.family or '-'}] {best.description}: "
+            + (compare_metrics(best.experiment.metrics, base, "baseline") or best.result or ""))
+
+
+def other_branches_text(nodes: Sequence[Node], node: Node,
+                        limit: int = OTHER_BRANCHES_SHOWN) -> str:
+    """Measured nodes off this node's path: what other branches tried and what it gave, so a
+    knob-turning search can see which settings moved the result which way."""
+    on_path = {n.id for n in ancestors(nodes, node)}
+    root = next((n for n in nodes if n.parent_id is None), None)
+    base = root.experiment.metrics if measured(root) and root and root.experiment else None
+    rows = [n for n in nodes if n.id not in on_path and measured(n) and n.type != "conclusion"]
+    lines = []
+    for n in rows[-limit:]:
+        assert n.experiment is not None
+        lines.append(f"- {n.id} [{n.family or '-'}] {n.verdict or n.status}: {n.description} | "
+                     + (compare_metrics(n.experiment.metrics, base, "baseline")
+                        or n.result or ""))
+    more = len(rows) - len(lines)
+    return "\n".join(lines + ([f"({more} older ones not shown: use get_results)"] if more > 0
+                                else [])) or "(no other branch has a result yet)"
+
+
 def node_line(node: Node) -> str:
     """One line about a node, for ancestor and sibling lists."""
     family = f"[{node.family}] " if node.family else ""
@@ -95,6 +182,9 @@ def build_context(view: RunView, node: Node, cfg: Config) -> dict[str, str]:
         or "(none yet)",
         "siblings": "\n".join(node_line(n) for n in children) or "(none yet)",
         "dead_ends": prompts.render_dead_ends(view.dead_ends),
+        "trend": trend_text(view.nodes, node),
+        "best": best_text(view.nodes),
+        "other_branches": other_branches_text(view.nodes, node),
         "budget": (f"{max(0, run.caps.node_budget - experiments)} experiment(s) left of "
                    f"{run.caps.node_budget}; this node is at depth {node.depth} of at most "
                    f"{run.caps.max_depth}; families tried so far: "

@@ -8,6 +8,8 @@ For each hypothesis give: "family", "title" (at most 12 words, naming the change
 
 Edits are search/replace: "path" (relative to the root, from the file list below), "find" (exact text copied from the file, long enough to occur only once), "replace" (the new text), "replace_all" (true only to change every occurrence). "new_files" are {"path", "content"}. Rules: {{limits}}
 
+Look at the measured values first. If the code, the vault and the findings give no clear direction (for example the only lever is a value to turn up or down), use what other branches measured: which settings moved the result which way, and step from the best one rather than away from it. If the last step on this path made things worse, prefer building on the best result over stacking more changes on the worse one.
+
 Do not run anything and do not claim results; the orchestrator applies your edit and runs the experiment.
 
 Question: {{question}}
@@ -25,6 +27,14 @@ How this node was reached (root first):
 
 Already proposed from this node:
 {{siblings}}
+
+The values measured along this path (each compared with the round before it):
+{{trend}}
+
+Best result so far: {{best}}
+
+What other branches measured (compared with the baseline):
+{{other_branches}}
 
 Findings so far:
 {{findings}}

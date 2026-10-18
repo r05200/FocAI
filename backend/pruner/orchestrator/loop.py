@@ -63,9 +63,10 @@ from pruner.core.events import (
     VaultRetrieved,
 )
 from pruner.core.llm import LLM, LLMError
-from pruner.core.models import DeadEnd, ForkRequest, LogEntry, Node
+from pruner.core.models import DeadEnd, ForkRequest, HypothesisSpec, LogEntry, Node
 from pruner.orchestrator import steering
 from pruner.orchestrator.actions import experiments_run, plan_action, room_under, why_blocked
+from pruner.orchestrator.context import best_node, previous_measured
 from pruner.orchestrator.experiment import ExperimentPhase, Runner, brief, describe
 from pruner.orchestrator.proposer import HypothesisPhase, next_node_ids
 from pruner.orchestrator.queue import candidates, select_next
@@ -102,7 +103,8 @@ def branches_text(nodes: list[Node]) -> str:
         while cur is not None:
             path.append(cur.id)
             cur = by_id.get(cur.parent_id) if cur.parent_id else None
-        state = n.verdict or ("not run" if n.experiment is None else n.status)
+        state = ("revert" if n.revert_to else
+                 n.verdict or ("not run" if n.experiment is None else n.status))
         line = f"- {' > '.join(reversed(path))} [{n.family or '-'}] {state}: {n.description}"
         if n.synthesis is not None:
             line += f"\n    Found: {n.synthesis.measured}\n    Finding: {n.synthesis.finding}"
@@ -113,15 +115,6 @@ def branches_text(nodes: list[Node]) -> str:
                     f"{n.decision.reason}"
         lines.append(line)
     return "\n".join(lines) or "(no branches)"
-
-
-def best_node(nodes: list[Node]) -> Node | None:
-    """The supported, measured node with the best judge score (then confidence), if any."""
-    good = [n for n in nodes if n.verdict == "supported" and n.status == "done"
-            and n.experiment is not None and not n.experiment.error]
-    return max(good, key=lambda n: (n.post_score or 0.0,
-                                    n.synthesis.confidence if n.synthesis else 0.0),
-               default=None)
 
 
 class Orchestrator:
@@ -256,6 +249,9 @@ class Orchestrator:
         run = state.run
         if node.status != "pending":  # a person parked it between its selection and now
             return
+        if node.revert_to is not None:
+            await self._revert(host, state, node)
+            return
         node.status, node.phase = "running", "experiment"
         host._emit(state, NodeUpdated, node=node, change="running")
         if state.workspace is None:
@@ -272,7 +268,11 @@ class Orchestrator:
                                                text=run.command.text, phase="experiment"))
             exp = await self.experiment.run(state.workspace, run.command, node.version or "")
         run.totals.experiments_run = experiments_run(state.nodes)
-        node.experiment, node.result = exp, brief(exp)  # the full text goes to the log
+        previous = previous_measured(state.nodes, node)
+        # the full text goes to the log; the node keeps the values and how they moved since the
+        # previous round
+        node.experiment, node.result = exp, brief(
+            exp, previous.experiment if previous else None, previous.id if previous else "")
         host._log(state, node.id, LogEntry(kind="error" if exp.error else "decision",
                                            title="Experiment failed" if exp.error
                                            else "Experiment measured"
@@ -297,12 +297,72 @@ class Orchestrator:
             kind="decision", title=f"Next: {plan.action}",
             text=f"The agent chose {synthesis.next_action}: {synthesis.next_reason}{note}",
             phase="synthesis"))
+        if plan.action == "revert" and plan.revert_to is not None:
+            state.focus = self._offer_revert(host, state, node, plan.revert_to).id  # runs next
+            return
         if plan.action == "stop" or plan.parent is None:
             node.closed = True
             return
         await host._checkpoint(state)
         await self.hypothesis.expand(host, state, plan.parent, mode=plan.mode, brief=plan.brief,
                                      count=plan.count)
+        # Manual mode: after a step the wrong way, going back is always one of the options.
+        if run.manual and synthesis.direction == "worse":
+            target = previous_measured(state.nodes, node)
+            if target is not None and room_under(run, state.nodes, node) > 0:
+                self._offer_revert(host, state, node, target)
+
+    # ---- reverting
+
+    def _offer_revert(self, host: RunManager, state: LiveRun, node: Node, target: Node) -> Node:
+        """A "Revert to <target>" option under `node`: back to the target's code (both version
+        and base_version, so its children build on it), with no experiment of its own."""
+        revert = Node(
+            id=next_node_ids(state.nodes, 1)[0], run_id=state.run.id, parent_id=node.id,
+            depth=node.depth + 1, type="hypothesis", family="revert", status="pending",
+            phase="hypothesis", revert_to=target.id, version=target.version,
+            base_version=target.version,
+            description=f"Revert to {target.id}: {target.description}"[:120],
+            summary=f"revert to {target.id}'s code",
+            hypothesis=HypothesisSpec(
+                family="revert",
+                statement=f"{node.id} was a step in the wrong direction: go back to "
+                          f"{target.id}'s code and try something else from there.",
+                planned_experiment=f"none: {target.id}'s result is already known"))
+        state.nodes.append(revert)
+        host._emit(state, NodeCreated, node=revert)
+        host._log(state, node.id, LogEntry(
+            kind="decision", title=f"Revert offered: back to {target.id}",
+            text=f"{revert.id} goes back to {target.id}'s code ({target.result or 'measured'}).",
+            phase="synthesis"))
+        return revert
+
+    async def _revert(self, host: RunManager, state: LiveRun, node: Node) -> None:
+        """Take a revert option: no experiment (the target's result is known), then propose new
+        hypotheses from the target's code, told that the step it reverts went the wrong way."""
+        by_id = {n.id: n for n in state.nodes}
+        target = by_id.get(node.revert_to or "")
+        wrong = by_id.get(node.parent_id or "")
+        node.status, node.phase = "done", "complete"
+        node.decided_by = node.decided_by or "agent"
+        node.result = (f"Back to {target.id}'s code: {target.result}" if target is not None
+                       else "Back to an earlier node's code")
+        host._log(state, node.id, LogEntry(kind="decision", title="Reverted", text=node.result))
+        host._emit(state, NodeUpdated, node=node, change="done")
+        state.concluded_from = node.id
+        room = room_under(state.run, state.nodes, node)
+        if room <= 0:
+            host._log(state, node.id, LogEntry(
+                kind="decision", title="No new hypotheses after the revert",
+                text=why_blocked(state.run, state.nodes, node)))
+            return
+        await host._checkpoint(state)
+        await self.hypothesis.expand(
+            host, state, node, mode="new_hypothesis", count=min(2, room),
+            brief=(f"{wrong.id} ({wrong.description}) was a step in the wrong direction, so this "
+                   f"branch went back to {target.id if target else 'an earlier node'}'s code. "
+                   f"Propose a different change from here; do not repeat {wrong.id}'s."
+                   if wrong is not None else ""))
 
     # ---- manual mode
 

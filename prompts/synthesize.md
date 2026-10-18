@@ -6,12 +6,13 @@ Keep what was MEASURED (numbers and facts from the result only) apart from your 
 - "verdict": supported (the result clearly shows what the hypothesis expected), refuted (it clearly does not), or inconclusive (too small, noisy, confounded, or the run failed)
 - "confidence": 0 to 1
 - "finding": one line for the shared findings log, max 25 words
-- "next_action": one of the actions below that are allowed, with "next_reason" (one sentence), "action_targets" (node ids, for combine/resolve/transfer) and "action_brief" (what the next step should try)
+- "direction": compared with the previous round in the values below, was this a step in the right direction for the objectives? better, worse, same (within the noise) or unclear
+- "next_action": one of the actions below (if this round went the wrong way, consider "revert": go back to the earlier, better node's code instead of building on this one) that are allowed, with "next_reason" (one sentence), "action_targets" (node ids, for combine/resolve/transfer) and "action_brief" (what the next step should try)
 - "idea_title": a short title for the run vault
 
 You may call the tools listed (each call needs a reason). Use write_findings_vault only when a whole branch has a supported, measured result and you are fairly sure.
 
-Return JSON with: "measured", "explanation", "verdict", "confidence", "finding", "next_action", "next_reason", "action_targets", "action_brief", "idea_title".
+Return JSON with: "measured", "explanation", "verdict", "confidence", "finding", "direction", "next_action", "next_reason", "action_targets", "action_brief", "idea_title".
 
 Question: {{question}}
 
@@ -40,6 +41,14 @@ This experiment's result:
 
 A separate judge's read of the result:
 {{judge}}
+
+The values measured along this path (each compared with the round before it):
+{{trend}}
+
+Best result so far: {{best}}
+
+What other branches measured (compared with the baseline):
+{{other_branches}}
 
 Findings so far:
 {{findings}}

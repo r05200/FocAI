@@ -10,6 +10,9 @@ it into an expansion (which node to propose from, in which mode, how many) or no
   resolve           tell apart a result and a note/finding that contradicts it: one child
   transfer          apply this node's supported change elsewhere: one child of the target node
                     (or of this node)
+  revert            the step went the wrong way: a "Revert to <node>" child of this node goes
+                    back to that earlier node's code (the previous measured one unless a target
+                    is named); no experiment runs for it, and new hypotheses grow from it
   stop              close this branch: no children from this node (the run itself ends only on
                     budget, an empty queue, or every objective covered)
 
@@ -24,6 +27,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from pruner.core.models import Node, Run
+from pruner.orchestrator.context import measured, previous_measured
 
 NODE_ACTIONS = ("more_experiments", "diagnose", "combine", "resolve", "transfer")
 
@@ -33,7 +37,8 @@ def experiments_run(nodes: Sequence[Node]) -> int:
 
 
 def pending(nodes: Sequence[Node]) -> int:
-    return sum(1 for n in nodes if n.status == "pending")
+    """Waiting nodes that will run an experiment (a revert option runs none)."""
+    return sum(1 for n in nodes if n.status == "pending" and n.revert_to is None)
 
 
 def experiments_left(run: Run, nodes: Sequence[Node]) -> int:
@@ -54,18 +59,30 @@ class Plan:
     count: int = 0
     brief: str = ""
     notes: list[str] = field(default_factory=list)  # why the agent's choice was changed
+    revert_to: Node | None = None  # revert: the earlier node whose code the branch goes back to
+
+
+def effective_depth(nodes: Sequence[Node], node: Node) -> int:
+    """The depth the caps count: a revert node stands where its target is, so going back never
+    uses up the depth limit."""
+    by_id = {n.id: n for n in nodes}
+    seen = set()
+    while node.revert_to is not None and node.revert_to in by_id and node.id not in seen:
+        seen.add(node.id)
+        node = by_id[node.revert_to]
+    return node.depth
 
 
 def room_under(run: Run, nodes: Sequence[Node], parent: Node) -> int:
     """How many children `parent` may still get (0 if blocked), with the reason why not."""
-    if parent.depth + 1 > run.caps.max_depth:
+    if effective_depth(nodes, parent) + 1 > run.caps.max_depth:
         return 0
     return min(run.caps.branching - live_children(nodes, parent.id),
                experiments_left(run, nodes))
 
 
 def why_blocked(run: Run, nodes: Sequence[Node], parent: Node) -> str:
-    if parent.depth + 1 > run.caps.max_depth:
+    if effective_depth(nodes, parent) + 1 > run.caps.max_depth:
         return f"{parent.id} is at the depth limit ({run.caps.max_depth})"
     if experiments_left(run, nodes) <= 0:
         return "the experiment budget is used up (queued nodes included)"
@@ -78,6 +95,13 @@ def plan_action(run: Run, nodes: Sequence[Node], node: Node, action: str,
     notes: list[str] = []
     if action == "stop":
         return Plan("stop")
+    if action == "revert":
+        target = next((by_id[t] for t in targets if t in by_id and t != node.id
+                       and measured(by_id[t])), None) or previous_measured(nodes, node)
+        if target is not None and room_under(run, nodes, node) > 0:
+            return Plan("revert", node, "revert", 1, brief, notes, revert_to=target)
+        notes.append("revert needs an earlier measured node and room under this one")
+        action = "new_hypothesis"
     if action == "combine":
         others = [by_id[t] for t in targets if t in by_id and t != node.id
                   and by_id[t].verdict == "supported"]

@@ -26,6 +26,7 @@ from pathlib import Path
 from pruner.core.config import Config, get_config
 from pruner.core.llm import DiskCache
 from pruner.core.models import ExperimentRun, RunCommand
+from pruner.orchestrator.context import compare_metrics
 from pruner.runs.command import runnable
 from pruner.workspace.paths import SKIP_DIRS, PathError
 from pruner.workspace.runner import CommandResult, run_command
@@ -171,9 +172,10 @@ def describe(run: ExperimentRun) -> str:
 BRIEF_CHARS = 400
 
 
-def brief(run: ExperimentRun) -> str:
-    """The short summary kept on the node (Node.result). describe() is the full text, which goes
-    to the judge prompts and the node's log."""
+def brief(run: ExperimentRun, previous: ExperimentRun | None = None, against: str = "") -> str:
+    """The short summary kept on the node (Node.result): the values, and how each moved since
+    the previous round (`previous`, measured at node `against`). describe() is the full text,
+    which goes to the judge prompts and the node's log."""
     resources = (run.result or {}).get("resources")
     if run.error:
         text = f"FAILED: {run.error}."
@@ -183,7 +185,8 @@ def brief(run: ExperimentRun) -> str:
         text = (f"Found {len(resources)} resource(s) ({vault} vault, {len(resources) - vault} "
                 f"web)" + (f": {best}" if best else ""))
     else:
-        metrics = ", ".join(f"{k}={v:g}" for k, v in list(run.metrics.items())[:12])
+        metrics = compare_metrics(run.metrics, previous.metrics if previous else None, against,
+                                  limit=8)
         text = f"Measured in {run.duration_s:.1f}s: {metrics or 'no numeric result'}"
     return text if len(text) <= BRIEF_CHARS else text[: BRIEF_CHARS - 1] + "…"
 

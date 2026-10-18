@@ -27,6 +27,7 @@ from pruner.core import prompts
 from pruner.core.config import Config, get_config
 from pruner.core.llm import LLM, LLMError
 from pruner.core.models import (
+    Direction,
     Finding,
     HypothesisVerdict,
     LogEntry,
@@ -36,7 +37,7 @@ from pruner.core.models import (
     Synthesis,
 )
 from pruner.orchestrator.actions import NODE_ACTIONS, experiments_left, room_under
-from pruner.orchestrator.context import RunView, ancestors, build_context
+from pruner.orchestrator.context import RunView, ancestors, build_context, previous_measured
 from pruner.orchestrator.experiment import compact, describe
 from pruner.pruning import postscorer as post
 from pruner.pruning.postscorer import PostScorer
@@ -53,6 +54,7 @@ class SynthesisOutput(BaseModel):
     verdict: HypothesisVerdict
     confidence: float = Field(default=0.5, ge=0, le=1)
     finding: str
+    direction: Direction = "unclear"
     next_action: NextAction = "stop"
     next_reason: str = ""
     action_targets: list[str] = Field(default_factory=list)
@@ -70,9 +72,14 @@ def baseline_text(nodes: list[Node]) -> str:
 def action_menu(state: LiveRun, node: Node) -> str:
     run, nodes = state.run, state.nodes
     lines = []
-    for action in (*NODE_ACTIONS, "new_hypothesis", "stop"):
+    previous = previous_measured(nodes, node)
+    for action in (*NODE_ACTIONS, "new_hypothesis", "revert", "stop"):
         if action == "stop":
             ok, why = True, ""
+        elif action == "revert":
+            ok = previous is not None and room_under(run, nodes, node) > 0
+            why = ("nothing measured before this node" if previous is None
+                   else "depth or budget limit")
         elif action == "new_hypothesis":
             parent = next((n for n in nodes if n.id == node.parent_id), node)
             ok = room_under(run, nodes, parent) > 0
@@ -84,7 +91,10 @@ def action_menu(state: LiveRun, node: Node) -> str:
             why = "" if ok else "depth or budget limit"
         mark = "allowed" if ok else ("allowed if supported" if ok is None else f"not allowed: "
                                                                                 f"{why}")
-        lines.append(f"- {action} ({mark})")
+        hint = (f": go back to {previous.id}'s code (or a node named in action_targets) when "
+                f"this round was a step in the wrong direction, and try something else from there"
+                if action == "revert" and previous is not None else "")
+        lines.append(f"- {action} ({mark}){hint}")
     left = experiments_left(run, nodes)
     return "\n".join(lines) + f"\n({left} experiment(s) left after the queued ones)"
 
@@ -128,6 +138,8 @@ class SynthesisPhase:
             "question": values["question"], "instructions": values["instructions"],
             "objectives": values["objectives"], "ancestors": values["ancestors"],
             "findings": values["findings"], "budget": values["budget"],
+            "trend": values["trend"], "best": values["best"],
+            "other_branches": values["other_branches"],
             "hypothesis": (f"{hypothesis.statement}\nExpected: {hypothesis.expected_signal}"
                            if hypothesis else node.description),
             "result": describe(node.experiment), "judge": await judge_task,
@@ -147,6 +159,7 @@ class SynthesisPhase:
         verdict = "inconclusive" if node.experiment.error else s.verdict
         synthesis = Synthesis(measured=s.measured, explanation=s.explanation, verdict=verdict,
                               confidence=s.confidence, finding=s.finding,
+                              direction=s.direction,
                               next_action=s.next_action, next_reason=s.next_reason,
                               action_targets=s.action_targets, action_brief=s.action_brief)
         compact(node.experiment)  # the judged text is in the node's log; keep the node light

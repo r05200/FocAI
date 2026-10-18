@@ -45,7 +45,9 @@ InstructionKind = Literal["spec", "steer"]
 NodePhase = Literal["hypothesis", "experiment", "synthesis", "complete"]
 HypothesisVerdict = Literal["supported", "refuted", "inconclusive"]
 NextAction = Literal["more_experiments", "new_hypothesis", "diagnose", "combine", "resolve",
-                     "transfer", "stop"]
+                     "transfer", "revert", "stop"]
+# How this round's result moved against the previous round (the nearest measured node above).
+Direction = Literal["better", "worse", "same", "unclear"]
 PreBand = Literal["low", "medium", "high"]  # how the UI shows a pre-score (from its zone)
 AgentPhase = Literal["hypothesis", "synthesis"]
 LogKind = Literal["thought", "tool_call", "tool_result", "decision", "activity", "error"]
@@ -230,6 +232,7 @@ class Synthesis(BaseModel):
     verdict: HypothesisVerdict
     confidence: float = Field(default=0.5, ge=0, le=1)
     finding: str  # one line
+    direction: Direction = "unclear"  # vs the previous round: was this step the right way?
     next_action: NextAction = "stop"
     next_reason: str = ""
     action_targets: list[str] = Field(default_factory=list)  # node ids (combine/resolve/transfer)
@@ -309,6 +312,10 @@ class Node(BaseModel):
     # Manual mode: this node's proposals are ready and the run waits for a person to choose which
     # one to pursue (keep it to run it, park the ones to drop). The UI rings the node in yellow.
     awaiting_choice: bool = False
+    # A revert option: go back to this earlier node's code (the step since then went the wrong
+    # way) and try something else from there. No experiment runs for it: the target's result is
+    # already known. The UI can show it as "Revert to <id>".
+    revert_to: str | None = None
     tool_calls: dict[str, int] = Field(default_factory=dict)  # calls used, per phase
     created_at: float = Field(default_factory=time.time)
 

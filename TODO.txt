@@ -184,3 +184,13 @@ it needs, and what milestone or session it came from.
         while waiting lets the agent pick at once.
       - Read Run.manual from the run (run_started / run_updated / GET /runs/{id}) so the switch
         shows the backend's state after a reload instead of only the local store.
+
+--- Direction, other branches and reverting (frontend-visible) ----------------------------------
+
+[ ] Frontend (types.ts): Node.revert_to: string | null; Synthesis.direction: "better" | "worse" |
+    "same" | "unclear"; the next action "revert". A revert node has family "revert", description
+    "Revert to <id>: ...", no experiment, and its result "Back to <id>'s code: ...". Show it as a
+    revert (e.g. an undo arrow) so it is clear going back is one of the options; in manual mode it
+    is offered among the choices after a step the wrong way (keep it to take it).
+[ ] Node.result now says how each value moved since the previous round, e.g.
+    "Measured in 1.2s: ms=9 (+12% vs n2), mem.mb=3 (same)": the body text the panel shows.
