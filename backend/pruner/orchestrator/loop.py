@@ -85,9 +85,21 @@ if TYPE_CHECKING:
     from pruner.runs.manager import LiveRun, RunManager
 
 
+class StepReason(BaseModel):
+    node_id: str
+    why: str  # why this step was taken, from the agents' own justifications (not its scores)
+
+
 class FinalReport(BaseModel):
     title: str = ""  # a headline: the conclusion node's label
     answer: str
+    steps: list[StepReason] = []  # how the run got to its answer, one entry per step that led there
+
+
+def step_reason_logs(steps: list[StepReason]) -> list[LogEntry]:
+    """The report's per-step justifications as log entries on the conclusion node."""
+    return [LogEntry(kind="decision", title=f"Why {s.node_id}", text=s.why.strip())
+            for s in steps if s.why.strip()]
 
 
 class BaselineFailed(RuntimeError):
@@ -109,8 +121,16 @@ def branches_text(nodes: list[Node]) -> str:
         state = ("revert" if n.revert_to else
                  n.verdict or ("not run" if n.experiment is None else n.status))
         line = f"- {' > '.join(reversed(path))} [{n.family or '-'}] {state}: {n.description}"
+        parent = by_id.get(n.parent_id)
+        if parent is not None and parent.synthesis is not None and parent.synthesis.next_reason:
+            line += (f"\n    Chosen because ({parent.id} said {parent.synthesis.next_action}): "
+                     f"{parent.synthesis.next_reason}")
+        if n.hypothesis is not None and n.hypothesis.rationale:
+            line += f"\n    Rationale: {n.hypothesis.rationale}"
         if n.synthesis is not None:
             line += f"\n    Found: {n.synthesis.measured}\n    Finding: {n.synthesis.finding}"
+            if n.synthesis.explanation:
+                line += f"\n    Likely cause (unverified): {n.synthesis.explanation}"
         elif n.result:
             line += f"\n    Result: {n.result}"
         if n.decision is not None:
@@ -364,12 +384,12 @@ class Orchestrator:
                                for f in findings) or "(none)",
             branches=branches_text(path),
             kept=f"this branch only, ending at {node.id}: {node.summary or node.description}")
-        title = ""
+        title, steps = "", []
         try:
             out = await AgentSession(self.llm, self.cfg).run(
                 FinalReport, prompt, model=self.cfg.agent_synthesis_model,
                 purpose="final_report")
-            answer, title = out.value.answer, out.value.title
+            answer, title, steps = out.value.answer, out.value.title, out.value.steps
         except LLMCancelled:  # a stop: not a missing report
             raise
         except LLMError:  # a missing report should not lose the person's conclusion
@@ -389,6 +409,8 @@ class Orchestrator:
                                            text=f"Parked {len(under)} node(s) under it."))
         host._log(state, conclusion.id, LogEntry(kind="decision", title="Branch concluded",
                                                  text=answer))
+        for entry in step_reason_logs(steps):
+            host._log(state, conclusion.id, entry)
         host._emit(state, Activity, node_id=node.id, message=(
             f"Concluded the branch at {node.id}: {len(under)} node(s) under it parked; the rest "
             f"of the run carries on."))
@@ -622,20 +644,21 @@ class Orchestrator:
             findings="\n".join(f"- {f.node_id or '-'} [{f.verdict}] {f.text}"
                                for f in state.findings) or "(none)",
             branches=branches_text(state.nodes), kept=kept)
-        title = ""
+        title, steps = "", []
         try:
             out = await AgentSession(self.llm, self.cfg).run(
                 FinalReport, prompt, model=self.cfg.agent_synthesis_model, purpose="final_report")
-            run.final_answer, title = out.value.answer, out.value.title
+            run.final_answer, title, steps = out.value.answer, out.value.title, out.value.steps
         except LLMCancelled:  # a stop: not a missing report
             raise
         except LLMError:  # the run's work is done; a missing report should not fail it
             run.final_answer = (f"Kept: {kept}.\nBranches:\n{branches_text(state.nodes)}\n"
                                 f"Findings:\n" + "\n".join(
                                     f"- [{f.verdict}] {f.text}" for f in state.findings))
-        self._conclude(host, state, title)
+        self._conclude(host, state, title, steps)
 
-    def _conclude(self, host: RunManager, state: LiveRun, title: str = "") -> Node:
+    def _conclude(self, host: RunManager, state: LiveRun, title: str = "",
+                  steps: list[StepReason] | None = None) -> Node:
         """The answer as a conclusion node, a child of the node the run ended on."""
         existing = next((n for n in state.nodes if n.type == "conclusion"
                          and not n.branch_conclusion), None)
@@ -659,4 +682,6 @@ class Orchestrator:
         host._emit(state, NodeCreated, node=node)
         host._log(state, node.id, LogEntry(kind="decision", title="Answer reached",
                                            text=f"Concluded from {parent.id}.\n{answer}"))
+        for entry in step_reason_logs(steps or []):
+            host._log(state, node.id, entry)
         return node

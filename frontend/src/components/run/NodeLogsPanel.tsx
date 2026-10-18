@@ -75,12 +75,19 @@ export default function NodeLogsPanel({ open, node, entries, source, onClose }: 
               <span className="shrink-0">{time(e.ts)}</span>
             </p>
             <p className="mt-0.5 text-sm font-medium">{e.title}</p>
+            {/* A tool call's text is the reason the agent gave for making it: show it first. */}
+            {e.kind === 'tool_call' && e.text && (
+              <p className="mt-1 text-xs leading-relaxed text-fg">
+                <span className="font-medium">Why: </span>
+                {e.text}
+              </p>
+            )}
             {e.args && (
               <pre className="mt-1 overflow-auto rounded-md bg-bg px-2 py-1.5 font-mono text-[11px] text-muted">
                 {JSON.stringify(e.args, null, 2)}
               </pre>
             )}
-            {e.text && (
+            {e.text && e.kind !== 'tool_call' && (
               <p
                 className={`mt-1 text-xs leading-relaxed whitespace-pre-wrap text-muted ${
                   e.kind === 'tool_result' ? 'rounded-md bg-bg px-2 py-1.5 font-mono text-[11px]' : ''
