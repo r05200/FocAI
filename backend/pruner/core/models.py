@@ -9,6 +9,7 @@ Rules of thumb:
 from __future__ import annotations
 
 import os
+import re
 import time
 import uuid
 from typing import Literal
@@ -591,7 +592,8 @@ class StartRunRequest(BaseModel):
     question: str
     spec: str = ""  # the research specs; stored as the run's first instruction (kind "spec")
     mode: RunMode = "pruned"
-    primary_person: str
+    # Person names become vault file names, so they follow PERSON_PATTERN (no "../", no "/").
+    primary_person: str = Field(pattern=PERSON_PATTERN)
     people: list[str] | None = None  # defaults to [primary_person]
     # Whose vaults the pre- and post-scorers search, e.g. just you, or you plus a teammate.
     # Defaults to [primary_person]; an empty list scores with no vault at all.
@@ -603,6 +605,15 @@ class StartRunRequest(BaseModel):
     # changed; listed files mean only those. They are edited in place (a backup is kept).
     paths: list[str] = Field(default_factory=list, max_length=50)
     manual: bool = False  # start in manual mode (it can be switched any time later)
+
+    @field_validator("people", "vault_people")
+    @classmethod
+    def _person_names(cls, names: list[str] | None) -> list[str] | None:
+        for name in names or []:
+            if not re.fullmatch(PERSON_PATTERN, name):
+                raise ValueError(f"{name!r} is not a valid person name (lowercase letters, "
+                                 f"digits, _ and -)")
+        return names
 
     @field_validator("paths")
     @classmethod

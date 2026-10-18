@@ -245,7 +245,14 @@ def confirm(host: RunManager, state: LiveRun, fork_id: str, at: str | None,
     fork_at.closed = False
     host._mirror(state, fork_at)
     room = room_under(run, state.nodes, fork_at)
-    if room > 0:
+    if fork_at.parent_id is not None and fork_at.status == "pending":
+        # F is a hypothesis that never ran: it runs first, then grows as usual
+        state.focus = fork_at.id
+        host._log(state, fork_at.id, LogEntry(
+            kind="decision", title="Runs next after the fork",
+            text=f"{fork_at.id} has not run yet, so it runs first; new hypotheses grow from it "
+                 f"after it is judged."))
+    elif room > 0:
         new = [o for o in run.objectives if o.source != "spec"]
         brief = prompts.render(
             "fork_brief", fork_at=f"{fork_at.id} ({fork_at.description})",
@@ -343,6 +350,10 @@ def undo(host: RunManager, state: LiveRun, fork_id: str, confirm_delete: bool) -
         host._emit(state, NodeRemoved, node_id=node.id)
     current = {n.id: n.model_dump_json() for n in state.nodes}
     state.nodes[:] = [n.model_copy(deep=True) for n in snap.nodes]
+    for node in state.nodes:  # a node mid-experiment when the fork was confirmed starts over
+        if node.status == "running":
+            node.status, node.phase = "pending", "hypothesis"
+            node.experiment = node.synthesis = node.verdict = node.result = None
     state.dead_ends[:] = [d.model_copy(deep=True) for d in snap.dead_ends]
     for node in state.nodes:
         if current.get(node.id) != node.model_dump_json():

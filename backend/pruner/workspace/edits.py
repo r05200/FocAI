@@ -79,6 +79,17 @@ def apply_edit(files: Mapping[str, str], edit: Edit, *, editable: Callable[[str]
     return out
 
 
+def unified_diff(old: str, new: str, fromfile: str, tofile: str) -> list[str]:
+    """difflib's unified diff, made safe to apply: a last line with no newline gets one plus
+    git's "\\ No newline at end of file" marker, instead of running into the next line."""
+    out = []
+    for line in difflib.unified_diff(old.splitlines(keepends=True),
+                                     new.splitlines(keepends=True), fromfile=fromfile,
+                                     tofile=tofile):
+        out.append(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n")
+    return out
+
+
 def diff_stats(before: Mapping[str, str | None], after: Mapping[str, str]) -> DiffStats:
     added = removed = 0
     for rel, new in after.items():

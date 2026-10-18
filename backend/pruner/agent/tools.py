@@ -41,6 +41,7 @@ from pruner.agent.web import (
     get_search_provider,
 )
 from pruner.core.config import Config, get_config
+from pruner.core.llm import LLMCancelled
 from pruner.core.models import Finding, HypothesisVerdict, Node, Run, RunIdea
 from pruner.pruning.scale import to_ten
 from pruner.vault.store import VaultStore, one_line
@@ -61,11 +62,17 @@ class Tool:
     kind: Literal["read", "write"] = "read"
 
     async def call(self, arguments: dict[str, Any]) -> str:
-        """Run with the model's arguments; a bad call becomes an error the model can read."""
+        """Run with the model's arguments; a bad call, or a tool that fails, becomes an error the
+        model can read instead of ending the run. A stop still goes through."""
         try:
             return await self.run(**arguments)
+        except LLMCancelled:
+            raise
         except TypeError as e:
             return _error(f"bad arguments for {self.name}: {e}")
+        except Exception as e:  # noqa: BLE001 - any tool failure: tell the agent, keep going
+            log.warning("tool %s failed: %s: %s", self.name, type(e).__name__, e)
+            return _error(f"{self.name} failed ({type(e).__name__}); try something else")
 
 
 DEFAULT_TOOLS: tuple[Tool, ...] = ()

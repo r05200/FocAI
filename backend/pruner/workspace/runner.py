@@ -3,8 +3,8 @@
 The command text always comes from the user (see runs/command.py), so it runs as they wrote it:
 through /bin/sh, in the run's root folder, with the server's environment. There is no sandbox.
 What is kept is operational: a timeout, a cap on the output kept, and the whole process group is
-killed on timeout or when the run is stopped (the caller's task is cancelled), so no experiment
-outlives its run.
+killed when the command ends, on timeout, or when the run is stopped (the caller's task is
+cancelled), so nothing an experiment starts (even in the background) outlives it.
 """
 
 from __future__ import annotations
@@ -48,15 +48,27 @@ def _kill_group(proc: asyncio.subprocess.Process, sig: int) -> None:
 
 
 async def _stop(proc: asyncio.subprocess.Process) -> None:
-    """SIGTERM the process group, then SIGKILL it if it is still there after a grace period."""
-    if proc.returncode is not None:
-        return
+    """SIGTERM the whole process group, then SIGKILL it after a grace period. Done even when the
+    shell itself has already exited: a child it left running in the background (`server &`)
+    keeps the output pipes open, and proc.wait() only returns once they close."""
     _kill_group(proc, signal.SIGTERM)
     try:
         await asyncio.wait_for(proc.wait(), KILL_GRACE_S)
     except TimeoutError:
         _kill_group(proc, signal.SIGKILL)
-        await proc.wait()
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(proc.wait(), KILL_GRACE_S)
+
+
+async def _exited(proc: asyncio.subprocess.Process, timeout_s: float) -> bool:
+    """Whether the shell exits within `timeout_s`. Watches the return code, not proc.wait(),
+    which also waits for every holder of the output pipes to close them."""
+    deadline = time.monotonic() + timeout_s
+    while proc.returncode is None:
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(0.02)
+    return True
 
 
 async def run_command(command: str, cwd: Path, *, timeout_s: float,
@@ -68,18 +80,20 @@ async def run_command(command: str, cwd: Path, *, timeout_s: float,
     assert proc.stdout is not None and proc.stderr is not None
     readers = asyncio.gather(_read_tail(proc.stdout, output_cap),
                              _read_tail(proc.stderr, output_cap))
-    timed_out = False
     try:
+        timed_out = not await _exited(proc, timeout_s)
+        exit_code = proc.returncode
+        await _stop(proc)  # also ends anything the command left running in the background
         try:
-            await asyncio.wait_for(proc.wait(), timeout_s)
-        except TimeoutError:
-            timed_out = True
-            await _stop(proc)
-        stdout, stderr = await readers
+            stdout, stderr = await asyncio.wait_for(readers, KILL_GRACE_S)
+        except TimeoutError:  # a process outside the group still holds the pipes
+            readers.cancel()
+            stdout = ""
+            stderr = "(the output could not be read: a process the command started holds it)"
     except asyncio.CancelledError:  # the run was stopped: take the experiment down with it
         await _stop(proc)
         readers.cancel()
         raise
-    return CommandResult(exit_code=None if timed_out else proc.returncode, timed_out=timed_out,
+    return CommandResult(exit_code=None if timed_out else exit_code, timed_out=timed_out,
                          duration_s=round(time.monotonic() - start, 3), stdout=stdout,
                          stderr=stderr)

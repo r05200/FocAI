@@ -239,7 +239,10 @@ async def stop_run(
         raise HTTPException(status_code=409, detail=f"run already {snapshot.run.status}")
     # The agent and the supporting LLM are separate instances; the run may be using both.
     cancelled = agent_llm.stop(run_id) + supporting_llm.stop(run_id)
-    await manager.stop(run_id)  # ends the run's tasks, then saves the tree as it is
+    try:
+        await manager.stop(run_id)  # ends the run's tasks, then saves the tree as it is
+    except RunNotRunning as e:  # a second Stop while the first is still underway
+        raise HTTPException(status_code=409, detail=str(e)) from e
     return StopResult(run_id=run_id, cancelled_calls=cancelled)
 
 

@@ -35,6 +35,15 @@ METRICS_SHOWN = 6
 OTHER_BRANCHES_SHOWN = 12
 
 
+def code_base(node: Node) -> str | None:
+    """The code a node's children build on: its own version if it was supported, is the
+    baseline, or is a revert (which holds its target's code), else the code it started from, so a
+    refuted change is not stacked. (orchestrator/proposer.py has the same rule for validating.)"""
+    if node.parent_id is None or node.verdict == "supported" or node.revert_to is not None:
+        return node.version
+    return node.base_version or node.version
+
+
 def measured(node: Node | None) -> bool:
     return node is not None and node.experiment is not None and not node.experiment.error
 
@@ -47,9 +56,32 @@ def best_node(nodes: Sequence[Node]) -> Node | None:
                default=None)
 
 
+def lineage(nodes: Sequence[Node], node: Node) -> list[Node]:
+    """Root first, ending with `node`: the line of code `node` really carries. A revert node
+    stands for its target, so the branch it reverted away from is left out."""
+    by_id = {n.id: n for n in nodes}
+    out: list[Node] = []
+    seen: set[str] = set()
+    current: Node | None = node
+    while current is not None and current.id not in seen:
+        seen.add(current.id)
+        out.append(current)
+        if current.revert_to is not None and current.revert_to in by_id:
+            current = by_id[current.revert_to]  # carry on from the target and its ancestors
+        else:
+            current = by_id.get(current.parent_id) if current.parent_id else None
+    return list(reversed(out))
+
+
+def effective_depth(nodes: Sequence[Node], node: Node) -> int:
+    """The depth the caps count: reverts do not add depth (a revert stands where its target
+    is, and its children one below that)."""
+    return sum(1 for n in lineage(nodes, node) if n.revert_to is None) - 1
+
+
 def previous_measured(nodes: Sequence[Node], node: Node) -> Node | None:
-    """The nearest measured node above `node` on its path (the previous round)."""
-    for n in reversed(ancestors(nodes, node)[:-1]):
+    """The nearest measured node above `node` on its line (the previous round)."""
+    for n in reversed(lineage(nodes, node)[:-1]):
         if measured(n):
             return n
     return None
@@ -77,7 +109,7 @@ def trend_text(nodes: Sequence[Node], node: Node) -> str:
     """The measured values along the path to `node`, each compared with the round before it, so
     the agent can tell whether the last step went the right way."""
     lines, before = [], None
-    for n in ancestors(nodes, node):
+    for n in lineage(nodes, node):
         if not measured(n):
             continue
         assert n.experiment is not None
@@ -194,7 +226,8 @@ def build_context(view: RunView, node: Node, cfg: Config) -> dict[str, str]:
         "instructions": prompts.render_instructions(run.instructions, run.directives),
         "objectives": prompts.render_objectives(run.objectives),
         "command": run.command.text if run.command else "(none yet)",
-        "code": render_code(view.workspace, node.version, cfg.code_context_chars),
+        # the code the children of `node` start from: what a proposal's edits must match
+        "code": render_code(view.workspace, code_base(node), cfg.code_context_chars),
         "ancestors": "\n".join(node_line(n) for n in path) or "(this is the start)",
         "findings": "\n".join(f"- {f.node_id or '-'} [{f.verdict}] {f.text}" for f in findings)
         or "(none yet)",
@@ -205,7 +238,8 @@ def build_context(view: RunView, node: Node, cfg: Config) -> dict[str, str]:
         "best": best_text(view.nodes),
         "other_branches": other_branches_text(view.nodes, node),
         "budget": (f"{max(0, run.caps.node_budget - experiments)} experiment(s) left of "
-                   f"{run.caps.node_budget}; this node is at depth {node.depth} of at most "
+                   f"{run.caps.node_budget}; this node is at depth "
+                   f"{effective_depth(view.nodes, node)} of at most "
                    f"{run.caps.max_depth}; families tried so far: "
                    f"{', '.join(families) or 'none'}"),
     }

@@ -78,8 +78,10 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import dataclasses
 import logging
 import os
+import sys
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import ExitStack
@@ -100,6 +102,7 @@ from pruner.core.events import (
     InstructionAdded,
     NodeCreated,
     NodeLog,
+    NodeRemoved,
     NodeUpdated,
     ObjectivesUpdated,
     QuestionAnswered,
@@ -136,6 +139,7 @@ from pruner.core.models import (
 )
 from pruner.orchestrator import fork, human
 from pruner.orchestrator.actions import room_under, why_blocked
+from pruner.orchestrator.context import code_base
 from pruner.orchestrator.queue import blocked
 from pruner.orchestrator.steering import Job, job_for
 from pruner.runs.command import verify_command
@@ -194,6 +198,8 @@ class PathLocked(ValueError):
 def _overlaps(a: str, b: str) -> bool:
     """The same path, or one inside the other (a folder locks everything under it)."""
     a, b = a.rstrip(os.sep), b.rstrip(os.sep)
+    if sys.platform == "darwin":  # macOS's filesystem ignores case: /Proj is /proj
+        a, b = a.casefold(), b.casefold()
     return a == b or a.startswith(b + os.sep) or b.startswith(a + os.sep)
 
 
@@ -238,6 +244,10 @@ class LiveRun:
     jobs: list[Job] = field(default_factory=list)  # expansions a person asked for, run first
     concluded_from: str | None = None  # the node the run's answer branches from (the last judged)
     recovered: bool = False  # reloaded after a server restart: paused, with no task until resumed
+    finishing: bool = False  # the loop is writing the final report: no more tree changes
+    stopping: bool = False  # stop() is underway: nothing else may act on the run
+    concluding: set[str] = field(default_factory=set)  # nodes a Conclude is being written for
+    level_at: float = 0.0  # when the last level boundary was saved (what a rewind undoes)
     # Set whenever something a manual-mode choice depends on changes (a keep, a park, a
     # suggestion, manual mode switched, an amendment): the waiting loop looks again.
     choice_changed: asyncio.Event = field(default_factory=asyncio.Event)
@@ -329,7 +339,7 @@ class RunManager:
 
         def done(t: asyncio.Task) -> None:
             state.tasks.discard(t)
-            if not state.tasks and not state.recovered:
+            if not state.tasks and not state.recovered and not state.stopping:
                 self._live.pop(state.run.id, None)
 
         task.add_done_callback(done)
@@ -343,6 +353,8 @@ class RunManager:
         if state is not None:
             if state.run.status != "running":
                 raise RunNotRunning(state.run.status)
+            if state.stopping:
+                raise RunNotRunning("stopping")
             return state
         snap = self.store.snapshot(run_id)
         if snap is None:
@@ -359,6 +371,10 @@ class RunManager:
                         ideas=list((self.store.run_vault(run_id) or RunVault(run_id=run_id)).ideas),
                         level_start=start, level=max((n.depth for n in nodes), default=0),
                         workspace=Workspace.load(run_id, self.cfg) if snap.run.workspace else None)
+        work = self.store.work(run_id)
+        state.jobs = [Job(**j) for j in work.get("jobs", [])]
+        state.fork_parks = dict(work.get("fork_parks", {}))
+        state.focus = work.get("focus")
         if not snap.run.paused:
             state.gate.set()
         self._live[run_id] = state
@@ -366,6 +382,12 @@ class RunManager:
 
     def _save(self, state: LiveRun) -> None:
         self.store.save_snapshot(state.saved())
+        self._save_work(state)
+
+    def _save_work(self, state: LiveRun) -> None:
+        self.store.save_work(state.run.id, {
+            "jobs": [dataclasses.asdict(j) for j in state.jobs],
+            "fork_parks": state.fork_parks, "focus": state.focus})
 
     def _boundary(self, state: LiveRun) -> None:
         """A level was created or completed: this tree is what a reload goes back to. A person's
@@ -376,6 +398,8 @@ class RunManager:
         state.level = max((n.depth for n in state.nodes), default=0)
         self.store.save_snapshot(snap)
         self.store.save_level_start(snap)
+        state.level_at = time.time()
+        self._save_work(state)
 
     def _rewind_level(self, state: LiveRun) -> None:
         """Put the tree back to how it was at the last level boundary: nodes created since are
@@ -383,10 +407,20 @@ class RunManager:
         depth, e.g. run a depth-1 node and give it children)."""
         assert state.level_start is not None
         origin = {n.id: n for n in state.level_start.nodes}
+        removed = [n for n in state.nodes if n.id not in origin]
+        undone_learned = [i for n in state.nodes for i in n.learned_ids
+                          if i not in (origin[n.id].learned_ids if n.id in origin else [])]
+        before = {n.id: n.model_dump_json() for n in state.nodes}
         state.nodes[:] = [n for n in state.nodes if n.id in origin]
         for node in state.nodes:
             for name in Node.model_fields:
                 setattr(node, name, copy.deepcopy(getattr(origin[node.id], name)))
+        self._undo_step_records(state, removed, undone_learned)
+        for node in removed:
+            state.emitter.emit(NodeRemoved, node_id=node.id)
+        for node in state.nodes:
+            if before.get(node.id) != node.model_dump_json() and node.status != "running":
+                state.emitter.emit(NodeUpdated, node=node, change="scored")
         state.emitter.emit(Activity, message=state.abort_note)
         state.abort_note = LiveRun.abort_note
         for node in state.nodes:
@@ -394,8 +428,58 @@ class RunManager:
                 state.emitter.emit(NodeUpdated, node=node, change="running")
         self._apply_pending(state)
 
+    def _undo_step_records(self, state: LiveRun, removed: list[Node],
+                           learned: list[str]) -> None:
+        """What an aborted step had recorded besides the tree: the findings, run-vault ideas and
+        dead ends of the nodes it judged (they are recorded again when it re-runs), the logs of
+        the nodes it created (their ids are reused), and what it filed in the person's vault."""
+        run = state.run
+        gone = {n.id for n in removed}
+        judged = {n.id for n in state.nodes if n.synthesis is not None}
+
+        def undone(node_id: str | None, created_at: float) -> bool:
+            return (created_at >= state.level_at and node_id is not None
+                    and (node_id in gone or node_id not in judged))
+
+        findings = [f for f in state.findings if not undone(f.node_id, f.created_at)]
+        if len(findings) != len(state.findings):
+            state.findings[:] = findings
+            self.store.save_findings(run.id, findings)
+        ideas = [i for i in state.ideas
+                 if not any(undone(n, i.created_at) for n in i.node_ids)]
+        if len(ideas) != len(state.ideas):
+            state.ideas[:] = ideas
+            vault = self.store.run_vault(run.id) or RunVault(run_id=run.id)
+            vault.ideas = list(ideas)
+            self.store.save_run_vault(vault)
+        by_id = {n.id: n for n in state.nodes}
+        state.dead_ends[:] = [d for d in state.dead_ends if d.node_id in by_id
+                              and by_id[d.node_id].status in ("parked", "failed")]
+        for node in removed:
+            self.store.delete_node_logs(run.id, node.id)
+        if self.vault is not None:
+            for item_id in learned:
+                self.vault.delete_item(item_id)
+        run.totals.experiments_run = sum(n.experiment is not None for n in state.nodes)
+
+    # The fields a change made outside the agent's step may set (copied onto the level start).
     MIRRORED = ("status", "decision", "decided_by", "pending_action", "closed", "awaiting_choice",
                 "directive_score", "directive_reason", "needs_remeasure", "missing_metrics")
+    # ...and for a node the step in flight is working on: never its status or decision, which
+    # would land on a level-start copy that has not run (and the step's work would be lost).
+    MIRRORED_IN_STEP = ("pending_action", "closed", "awaiting_choice", "directive_score",
+                        "directive_reason")
+
+    def _in_step(self, state: LiveRun, node: Node) -> bool:
+        """The step in flight is working on this node: running it, or already past that (it
+        ran and is being judged or grown) while its level-start copy has not run."""
+        if node.status == "running":
+            return True
+        if state.level_start is None or state.step is None or state.step.done():
+            return False
+        origin = next((n for n in state.level_start.nodes if n.id == node.id), None)
+        return origin is not None and (origin.phase != node.phase or origin.status != node.status
+                                       or (origin.experiment is None) != (node.experiment is None))
 
     def _mirror(self, state: LiveRun, node: Node) -> None:
         """Copy a change made outside the agent's step (a person's action, a re-rate) onto the
@@ -405,7 +489,7 @@ class RunManager:
         origin = next((n for n in state.level_start.nodes if n.id == node.id), None)
         if origin is None:  # created by the step in flight: a rewind removes it anyway
             return
-        names = ("pending_action",) if node.status == "running" else self.MIRRORED
+        names = self.MIRRORED_IN_STEP if self._in_step(state, node) else self.MIRRORED
         for name in names:
             setattr(origin, name, copy.deepcopy(getattr(node, name)))
         self.store.save_level_start(state.level_start)
@@ -500,6 +584,8 @@ class RunManager:
                 # what the lost step had logged would be logged again when it re-runs
                 state.findings = [f for f in state.findings
                                   if f.node_id is None or f.node_id in judged]
+                state.ideas = [i for i in state.ideas
+                               if all(n in judged for n in i.node_ids)]
                 state.dead_ends = [d for d in state.dead_ends if d.node_id in known]
                 state.recovered = True
                 state.gate.clear()
@@ -669,13 +755,16 @@ class RunManager:
         """The node's tools for `phase`, or None when the manager has no vault (no tools)."""
         if self.vault is None:
             return None
+        # proposing from a node: the code its children build on (what the prompt shows); judging
+        # a node: the code that was tested
+        version = node.version if phase == "synthesis" else code_base(node)
         ctx = ToolContext(run=state.run, nodes=state.nodes, vault=self.vault, cfg=self.cfg,
-                          workspace=state.workspace, version=node.version, node_id=node.id,
+                          workspace=state.workspace, version=version, node_id=node.id,
                           on_finding=lambda f: self._add_finding(state, f),
                           on_branch_finding=lambda i: self._add_idea(state, i))
         return ToolRunner(phase_tools(ctx, phase), phase=phase, cfg=self.cfg,  # type: ignore[arg-type]
                           on_call=lambda r: self._log_call(state, node.id, r),
-                          seen=state.tool_seen)
+                          seen=state.tool_seen, scope=version or "")
 
     # ---- a person's actions on nodes, and suggestions
 
@@ -688,7 +777,7 @@ class RunManager:
         if node is None:
             raise KeyError(node_id)
         self._refuse_while_forking(state)
-        if node.status == "running":
+        if self._in_step(state, node):
             human.check(node, action)
             node.pending_action = action
             self._mirror(state, node)
@@ -939,11 +1028,17 @@ class RunManager:
         """End a run the user stopped: cancel its tasks, then save the tree as it is with the
         final run_failed event. KeyError if the run is unknown."""
         state = self._live.get(run_id)
+        if state is not None:
+            if state.stopping:
+                raise RunNotRunning("stopping")
+            state.stopping = True  # from here on every other action is refused
         await self.cancel(run_id)
         if state is not None:
             self._drop_choice(state)
             await asyncio.to_thread(self._settle_files, state)
         event = self.store.mark_stopped(run_id, state.snapshot() if state else None)
+        if state is not None:
+            state.emitter.seq = max(state.emitter.seq, event.seq)
         self.bus.publish(event)  # ends the run's open streams
         self.release_paths(run_id)
         self._live.pop(run_id, None)
@@ -966,7 +1061,7 @@ class RunManager:
                     amended = False
                     if instruction is not None:
                         amended = await self._amend_objectives(state, instruction)
-                    if self.orchestrator is not None:
+                    if self.orchestrator is not None and not state.finishing:
                         await self.orchestrator.steer(
                             self, state, change=change,
                             instruction_id=instruction.id if instruction else instruction_id)
@@ -1018,10 +1113,20 @@ class RunManager:
         if node.type == "conclusion" or node.status in ("parked", "failed"):
             what = "a conclusion" if node.type == "conclusion" else node.status
             raise human.IllegalAction(f"{node.id} is {what} and cannot conclude")
-        if any(c.parent_id == node.id and c.branch_conclusion for c in state.nodes):
+        if (any(c.parent_id == node.id and c.branch_conclusion for c in state.nodes)
+                or node.id in state.concluding):
             raise human.IllegalAction(f"{node.id} is already concluded")
-        with self._scopes(run_id):
-            conclusion = await self.orchestrator.conclude_branch(self, state, node)
+        in_level = state.level_start is None or any(
+            n.id == node.id for n in state.level_start.nodes)
+        if not in_level and state.step is not None and not state.step.done():
+            raise human.IllegalAction(f"{node.id} is still being created by the step in "
+                                      f"progress; conclude it when the step has finished")
+        state.concluding.add(node.id)
+        try:
+            with self._scopes(run_id):
+                conclusion = await self.orchestrator.conclude_branch(self, state, node)
+        finally:
+            state.concluding.discard(node.id)
         state.choice_changed.set()
         self._save(state)
         return conclusion

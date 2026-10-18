@@ -17,8 +17,12 @@ from pathlib import Path, PurePosixPath
 SKIP_DIRS = frozenset({".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv",
                        ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox", ".idea",
                        ".DS_Store"})
-SECRET_PATTERNS = (".env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*", "*.p12",
-                   "*.pfx", ".netrc", ".npmrc", ".pypirc")
+SECRET_PATTERNS = (".env", ".env.*", "*.pem", "*.key", "id_rsa*", "id_ed25519*", "id_ecdsa*",
+                   "*.p12", "*.pfx", ".netrc", ".npmrc", ".pypirc", ".git-credentials",
+                   "credentials", "credentials.json", "secrets.*", "*.secret", "*.kdbx",
+                   "service-account*.json", ".htpasswd")
+# Folders that hold credentials: nothing under them is read, listed or edited.
+SECRET_DIRS = frozenset({".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".gcloud"})
 MAX_FILES = 2000  # files listed per run
 MAX_FILE_BYTES = 2_000_000  # larger files are not backed up or edited
 
@@ -28,8 +32,19 @@ class PathError(ValueError):
 
 
 def is_secret(rel: str) -> bool:
-    name = PurePosixPath(rel).name
-    return any(fnmatch.fnmatch(name, p) for p in SECRET_PATTERNS)
+    """A credentials file, by name or folder. Case-insensitive, since macOS's filesystem is:
+    ".ENV" is the same file as ".env"."""
+    parts = PurePosixPath(rel.casefold()).parts
+    if not parts:
+        return False
+    return (any(fnmatch.fnmatch(parts[-1], p) for p in SECRET_PATTERNS)
+            or any(part in SECRET_DIRS for part in parts[:-1]))
+
+
+def is_skipped(rel: str) -> bool:
+    """Under a noise or tool folder (.git, node_modules, ...), case-insensitively."""
+    skip = {d.casefold() for d in SKIP_DIRS}
+    return any(part in skip for part in PurePosixPath(rel.casefold()).parts)
 
 
 @dataclass(frozen=True)
@@ -39,11 +54,22 @@ class Roots:
     editable_files: tuple[str, ...]
 
     def is_editable(self, rel: str) -> bool:
-        if is_secret(rel) or any(part in SKIP_DIRS for part in PurePosixPath(rel).parts):
+        if is_secret(rel) or is_skipped(rel):
             return False
         if rel in self.editable_files:
             return True
         return any(d == "" or rel == d or rel.startswith(d + "/") for d in self.editable_dirs)
+
+    def is_readable(self, rel: str) -> bool:
+        """What the agent may read: the editable set, plus other files in the folder of a file
+        the user listed (its README, say). Never secrets or noise folders, and never anything
+        else under the root, which for several paths can be a broad common folder such as ~."""
+        if is_secret(rel) or is_skipped(rel):
+            return False
+        if self.is_editable(rel):
+            return True
+        parent = PurePosixPath(rel).parent.as_posix()
+        return any(PurePosixPath(f).parent.as_posix() == parent for f in self.editable_files)
 
 
 def resolve_paths(paths: list[str]) -> Roots:

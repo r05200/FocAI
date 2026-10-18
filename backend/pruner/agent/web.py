@@ -173,9 +173,15 @@ async def _resolve(host: str) -> list[str]:
 
 async def check_public_url(url: str, resolve: Resolver = _resolve) -> None:
     """Raise FetchError unless `url` is http(s) and its host resolves only to public addresses."""
-    parts = urlsplit(url)
-    if parts.scheme not in ("http", "https") or not parts.hostname:
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+    except ValueError as e:  # e.g. "http://[::1" or a bad port
+        raise FetchError(f"not a valid URL: {e}") from e
+    if parts.scheme not in ("http", "https") or not host:
         raise FetchError("only http and https URLs can be fetched")
+    if "\x00" in url or any(c.isspace() for c in url.strip()):
+        raise FetchError("not a valid URL")
     try:
         addresses = await resolve(parts.hostname)
     except OSError as e:
@@ -184,6 +190,21 @@ async def check_public_url(url: str, resolve: Resolver = _resolve) -> None:
         ip = ipaddress.ip_address(address.split("%")[0])
         if not ip.is_global:
             raise FetchError(f"{parts.hostname} is not a public address")
+
+
+def _check_peer(resp: httpx.Response) -> None:
+    """FetchError if the connection went to a non-public address: the host was checked before
+    connecting, but a DNS answer can change in between (rebinding)."""
+    stream = resp.extensions.get("network_stream")
+    addr = stream.get_extra_info("server_addr") if stream is not None else None
+    if not addr:
+        return
+    try:
+        ip = ipaddress.ip_address(str(addr[0]).split("%")[0])
+    except ValueError:
+        return
+    if not ip.is_global:
+        raise FetchError("the page is served from a non-public address")
 
 
 class PageFetcher:
@@ -211,6 +232,7 @@ class PageFetcher:
                 async with client.stream("GET", url, timeout=self.cfg.fetch_timeout_s,
                                          headers={"user-agent": "pruner-research-agent"},
                                          follow_redirects=False) as resp:
+                    _check_peer(resp)  # the address really connected to (DNS can change)
                     if resp.is_redirect and "location" in resp.headers:
                         url = str(resp.url.join(resp.headers["location"]))
                         continue
@@ -227,7 +249,7 @@ class PageFetcher:
                     # page; the fetch tool cuts what it shows the agent to cfg.fetch_max_chars.
                     return Page(url=url, status=resp.status_code, title=title, text=clean)
             raise FetchError("too many redirects")
-        except httpx.HTTPError as e:
+        except (httpx.HTTPError, httpx.InvalidURL, ValueError) as e:
             raise FetchError(f"could not fetch {url}: {e.__class__.__name__}") from e
         finally:
             if self._client is None:

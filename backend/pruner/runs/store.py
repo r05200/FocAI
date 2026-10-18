@@ -20,6 +20,8 @@ If a run was cut off before a snapshot was saved, snapshot() rebuilds one from i
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 from pathlib import Path
 
@@ -54,6 +56,8 @@ from pruner.core.models import (
     Suggestion,
 )
 
+log = logging.getLogger(__name__)
+
 STOPPED_BY_USER = "Stopped by the user"
 EVENTS_FILE = "events.jsonl"
 FORKS_FILE = "forks.jsonl"
@@ -63,7 +67,8 @@ FINDINGS_FILE = "findings.jsonl"
 RUN_VAULT_FILE = "vault.json"
 LOGS_DIR = "logs"
 PATCH_FILE = "final.patch"
-FORK_SNAPSHOTS_DIR = "fork_snapshots"  # the tree before each confirmed fork (for undo)
+FORK_SNAPSHOTS_DIR = "fork_snapshots"
+WORK_FILE = "work.json"  # queued jobs, deferred parks and focus (RunStore.save_work)  # the tree before each confirmed fork (for undo)
 _NODE_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")  # node ids become log file names
 _RUN_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")  # run ids become directory names
 
@@ -152,6 +157,21 @@ class RunStore:
             return None
         return RunSnapshot.model_validate_json(path.read_text())
 
+    def save_work(self, run_id: str, work: dict) -> None:
+        """Work queued outside the tree (jobs, deferred parks, the node to run next), so a
+        restart does not lose it."""
+        write_atomic(self.dir / run_id / WORK_FILE, json.dumps(work))
+
+    def work(self, run_id: str) -> dict:
+        path = self._file(run_id, WORK_FILE)
+        if path is None or not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text())
+        except ValueError:
+            log.warning("skipped an unreadable %s in run %s", WORK_FILE, run_id)
+            return {}
+
     def delete_node_logs(self, run_id: str, node_id: str) -> None:
         path = self._file(run_id, f"{LOGS_DIR}/{node_id}.jsonl")
         if path is not None and _NODE_ID.match(node_id) and path.exists():
@@ -218,8 +238,15 @@ class RunStore:
     # ---- reads
 
     def events(self, run_id: str, after: int = 0) -> list[Event]:
-        """The run's saved events with seq greater than `after`, in order."""
-        events = [parse_event(line) for line in self._lines(run_id, EVENTS_FILE)]
+        """The run's saved events with seq greater than `after`, in order. A line that does not
+        parse (the server died mid-write, or a reader caught a line being appended) is skipped,
+        so one damaged line never makes the whole run unreadable."""
+        events = []
+        for line in self._lines(run_id, EVENTS_FILE):
+            try:
+                events.append(parse_event(line))
+            except ValueError:
+                log.warning("skipped an unreadable event line in run %s", run_id)
         return [e for e in events if e.seq > after]
 
     def snapshot(self, run_id: str) -> RunSnapshot | None:
@@ -241,6 +268,15 @@ class RunStore:
         """Every saved run, newest first."""
         if not self.dir.exists():
             return []
-        runs = [s.run for p in self.dir.iterdir() if p.is_dir()
-                if (s := self.snapshot(p.name)) is not None]
+        runs = []
+        for p in self.dir.iterdir():
+            if not p.is_dir():
+                continue
+            try:
+                snap = self.snapshot(p.name)
+            except (ValueError, OSError):  # one damaged run must not hide every other run
+                log.exception("could not read run %s", p.name)
+                continue
+            if snap is not None:
+                runs.append(snap.run)
         return sorted(runs, key=lambda r: r.created_at, reverse=True)

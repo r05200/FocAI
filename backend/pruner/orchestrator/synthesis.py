@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field
 from pruner.agent.toolloop import AgentSession
 from pruner.core import prompts
 from pruner.core.config import Config, get_config
-from pruner.core.llm import LLM, LLMError
+from pruner.core.llm import LLM, LLMCancelled, LLMError
 from pruner.core.models import (
     Direction,
     Finding,
@@ -124,6 +124,8 @@ class SynthesisPhase:
                     result=describe(node.experiment),
                     people=run.vault_people, baseline=baseline, dead_ends=state.dead_ends,
                     instructions=run.instructions, directives=run.directives)
+            except LLMCancelled:  # a stop
+                raise
             except (LLMError, ValueError) as e:  # the judge is advice; synthesis goes on
                 log.warning("post-score of %s failed: %s", node.id, e)
                 return "(the judge could not score this result)"
@@ -203,5 +205,7 @@ class SynthesisPhase:
                     summary=f"{s.verdict.capitalize()} in run {run.id}: {s.measured}",
                     source_text=f"{node.full_text()}\n{describe(node.experiment)}")
                 node.learned_ids.append(learned.item.id)  # undoing a fork can remove it
+            except LLMCancelled:  # a stop
+                raise
             except (LLMError, OSError) as e:  # the vault is a bonus; the run goes on
                 log.warning("could not file the finding of %s in the vault: %s", node.id, e)

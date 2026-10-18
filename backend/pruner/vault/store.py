@@ -39,6 +39,7 @@ from pruner.core.config import Config, get_config
 from pruner.core.fs import write_atomic
 from pruner.core.llm import LLM
 from pruner.core.models import (
+    PERSON_PATTERN,
     IngestRequest,
     IngestResult,
     ItemPosition,
@@ -162,6 +163,8 @@ class VaultStore:
             self._save(person)
 
     def _save(self, person: str) -> None:
+        if not re.fullmatch(PERSON_PATTERN, person):  # a person name is a file name here
+            raise ValueError(f"not a valid person name: {person!r}")
         items = [i.model_dump(mode="json") for i in self._items.values() if i.person == person]
         write_atomic(self.dir / f"{person}.json", _items_json(items))
         write_atomic(self.dir / EDGES_FILE,
@@ -272,6 +275,11 @@ class VaultStore:
         the search to those owners (an empty `people` searches nothing)."""
         pool = [i for i in self._items.values()
                 if i.embedding is not None and (people is None or i.person in people)]
+        same = [i for i in pool if len(i.embedding or ()) == len(embedding)]
+        if len(same) < len(pool):  # embedded with another model or size: cannot be compared
+            log.warning("skipped %d vault item(s) whose embedding size differs from %d",
+                        len(pool) - len(same), len(embedding))
+        pool = same
         if not pool:
             return []
         matrix = unit_vectors(np.array([i.embedding for i in pool], dtype=np.float32))
@@ -390,7 +398,8 @@ class VaultStore:
         item.auto_position = Position(x=x, y=y, z=z)
         self._vaults.add(item.person)
         self._items[item.id] = item
-        self._edges.extend(edges)
+        # an item deleted while the relation call ran must not be linked to
+        self._edges.extend(e for e in edges if e.target in self._items)
         self._save(item.person)
         log.info("ingested %s (%s) with %d edges", item.id, item.title, len(edges))
         return IngestResult(item=item.view(), edges=edges)

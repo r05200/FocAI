@@ -63,6 +63,7 @@ class Config:
     branch_finding_min_confidence: float  # 0..1; below this write_findings_vault is refused
     agent_linked_cap: int  # notes reached only through a link that search_vault returns
     llm_min_interval_s: float  # least time between two API calls on one key (free-tier pacing)
+    llm_timeout_s: float  # a Gemini request that takes longer is retried, then fails
 
     # --- Workspace and experiments (the user's files are edited in place) ---
     work_dir: Path  # backups, versions and logs of each run (never the user's files)
@@ -153,6 +154,7 @@ def get_config() -> Config:
         branch_finding_min_confidence=_env_float("BRANCH_FINDING_MIN_CONFIDENCE", 0.7),
         agent_linked_cap=_env_int("AGENT_LINKED_CAP", 2),
         llm_min_interval_s=_env_float("LLM_MIN_INTERVAL_S", 0.0),
+        llm_timeout_s=_env_float("LLM_TIMEOUT_S", 120.0),
         work_dir=Path(_env("WORK_DIR", str(data_dir / "work"))),
         experiment_timeout_s=_env_float("EXPERIMENT_TIMEOUT_S", 600.0),
         experiment_output_cap=_env_int("EXPERIMENT_OUTPUT_CAP", 20_000),

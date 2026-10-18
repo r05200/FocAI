@@ -58,13 +58,17 @@ def with_reason(parameters: dict[str, Any]) -> dict[str, Any]:
     return schema
 
 
+# Read tools whose answer changes as the run goes on (the tree's results): never reused.
+FRESH_TOOLS = frozenset({"get_results"})
+
+
 class ToolRunner:
     """One phase's tools, with their budgets. `on_call` is told about every call that ran."""
 
     def __init__(self, tools: Sequence[Tool], *, phase: AgentPhase = "hypothesis",
                  cfg: Config | None = None,
                  on_call: Callable[[ToolCallRecord], None] | None = None,
-                 seen: dict[str, str] | None = None) -> None:
+                 seen: dict[str, str] | None = None, scope: str = "") -> None:
         cfg = cfg or get_config()
         self.tools = {t.name: t for t in tools}
         self.phase = phase
@@ -74,6 +78,9 @@ class ToolRunner:
         self.used: dict[str, int] = {}  # "read", or a write tool's name -> calls made
         self.records: list[ToolCallRecord] = []
         self.seen = seen if seen is not None else {}  # (tool, args) -> result, shared per run
+        # what the reused results depend on (the code version read_file reads): a call made for
+        # another version is not "the same call"
+        self.scope = scope
 
     @property
     def max_calls(self) -> int:
@@ -102,15 +109,15 @@ class ToolRunner:
         reason = str(args.pop("reason", "") or "").strip()
         if not reason:
             return _error("every tool call needs a 'reason': one sentence on why you call it")
-        key = json.dumps([name, args], sort_keys=True, default=str)
-        cached = key in self.seen
+        key = json.dumps([name, args, self.scope], sort_keys=True, default=str)
+        cached = key in self.seen and name not in FRESH_TOOLS
         if cached:
             result = self.seen[key]
         elif not self._budget_left(tool):
             return _error(f"the {tool.kind} tool budget for this phase is used up; answer now")
         else:
             result = await tool.call(args)
-            if tool.kind == "read":  # writes must never be replayed from memory
+            if tool.kind == "read" and name not in FRESH_TOOLS:  # writes never replayed
                 self.seen[key] = result
         record = ToolCallRecord(phase=self.phase, tool=name, args=args, reason=reason,
                                 result_preview=result[:PREVIEW_CHARS], cached=cached)

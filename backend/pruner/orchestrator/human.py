@@ -55,7 +55,9 @@ def apply(run: Run, nodes: Sequence[Node], dead_ends: list[DeadEnd], node: Node,
     changed: list[tuple[Node, NodeChange]] = []
     for n in path:
         if n.status == "parked":
-            n.status = "done" if n.experiment is not None else "pending"
+            # a node that ran, or a revert already taken, is finished; only an untried one waits
+            n.status = ("done" if n.experiment is not None or n.phase == "complete"
+                        else "pending")
             dead_ends[:] = [d for d in dead_ends if d.node_id != n.id]
             if action == "restore":
                 run.totals.nodes_restored += 1

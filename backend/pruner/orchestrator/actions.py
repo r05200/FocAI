@@ -27,7 +27,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from pruner.core.models import Node, Run
-from pruner.orchestrator.context import measured, previous_measured
+from pruner.orchestrator.context import (
+    effective_depth,
+    lineage,
+    measured,
+    previous_measured,
+)
+from pruner.orchestrator.queue import blocked
 
 NODE_ACTIONS = ("more_experiments", "diagnose", "combine", "resolve", "transfer")
 
@@ -37,8 +43,11 @@ def experiments_run(nodes: Sequence[Node]) -> int:
 
 
 def pending(nodes: Sequence[Node]) -> int:
-    """Waiting nodes that will run an experiment (a revert option runs none)."""
-    return sum(1 for n in nodes if n.status == "pending" and n.revert_to is None)
+    """Waiting nodes that will run an experiment: not a revert option (it runs none), and not
+    under a parked or closed node (it never runs, so it must not hold budget)."""
+    by_id = {n.id: n for n in nodes}
+    return sum(1 for n in nodes if n.status == "pending" and n.revert_to is None
+               and not blocked(n, by_id))
 
 
 def experiments_left(run: Run, nodes: Sequence[Node]) -> int:
@@ -60,17 +69,6 @@ class Plan:
     brief: str = ""
     notes: list[str] = field(default_factory=list)  # why the agent's choice was changed
     revert_to: Node | None = None  # revert: the earlier node whose code the branch goes back to
-
-
-def effective_depth(nodes: Sequence[Node], node: Node) -> int:
-    """The depth the caps count: a revert node stands where its target is, so going back never
-    uses up the depth limit."""
-    by_id = {n.id: n for n in nodes}
-    seen = set()
-    while node.revert_to is not None and node.revert_to in by_id and node.id not in seen:
-        seen.add(node.id)
-        node = by_id[node.revert_to]
-    return node.depth
 
 
 def room_under(run: Run, nodes: Sequence[Node], parent: Node) -> int:
@@ -96,8 +94,10 @@ def plan_action(run: Run, nodes: Sequence[Node], node: Node, action: str,
     if action == "stop":
         return Plan("stop")
     if action == "revert":
-        target = next((by_id[t] for t in targets if t in by_id and t != node.id
-                       and measured(by_id[t])), None) or previous_measured(nodes, node)
+        line = {n.id for n in lineage(nodes, node)}  # only back along this node's own line
+        target = next((by_id[t] for t in targets if t in line and t != node.id
+                       and measured(by_id[t]) and by_id[t].status != "parked"), None) \
+            or previous_measured(nodes, node)
         if target is not None and room_under(run, nodes, node) > 0:
             return Plan("revert", node, "revert", 1, brief, notes, revert_to=target)
         notes.append("revert needs an earlier measured node and room under this one")
@@ -113,6 +113,11 @@ def plan_action(run: Run, nodes: Sequence[Node], node: Node, action: str,
                 f"{o.id} ({o.family}): {o.summary}" for o in others)).strip()
     if action == "transfer":
         target = by_id.get(targets[0]) if targets else None
+        if target is not None and (target.type == "conclusion" or target.revert_to is not None
+                                   or target.status in ("parked", "failed")
+                                   or blocked(target, by_id)):
+            notes.append(f"transfer target {target.id} is not a live node; using {node.id}")
+            target = None
         if node.verdict != "supported":
             notes.append("transfer needs a supported change")
             action = "new_hypothesis"

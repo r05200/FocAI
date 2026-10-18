@@ -86,7 +86,9 @@ def find_result(ws: Workspace, command: RunCommand, stdout: str,
     if command.result_file:
         try:
             rel = ws.roots.root / command.result_file
-            if rel.resolve().is_relative_to(root):
+            # only a file this experiment wrote: one left from an earlier run is not its result
+            fresh = rel.stat().st_mtime != before.get(command.result_file)
+            if fresh and rel.resolve().is_relative_to(root):
                 value = _load(rel)
                 if value is not None:
                     return value, command.result_file
@@ -136,6 +138,10 @@ class ExperimentPhase:
 
     async def _run(self, ws: Workspace, command: RunCommand) -> ExperimentRun:
         before = await asyncio.to_thread(json_mtimes, ws.roots.root)
+        if command.result_file:  # also when it is not a .json file
+            hint = ws.roots.root / command.result_file
+            if hint.is_file():
+                before[command.result_file] = hint.stat().st_mtime
         result = await self.runner(runnable(command.text), ws.roots.root,
                                    timeout_s=command.timeout_s or self.cfg.experiment_timeout_s,
                                    output_cap=self.cfg.experiment_output_cap)

@@ -65,14 +65,14 @@ from pruner.core.events import (
     RunUpdated,
     VaultRetrieved,
 )
-from pruner.core.llm import LLM, LLMError
+from pruner.core.llm import LLM, LLMCancelled, LLMError
 from pruner.core.models import DeadEnd, HypothesisSpec, LogEntry, Node
 from pruner.orchestrator import fork, steering
 from pruner.orchestrator.actions import experiments_run, plan_action, room_under, why_blocked
-from pruner.orchestrator.context import ancestors, best_node, previous_measured
+from pruner.orchestrator.context import ancestors, best_node, code_base, previous_measured
 from pruner.orchestrator.experiment import ExperimentPhase, Runner, brief, describe
 from pruner.orchestrator.proposer import HypothesisPhase, next_node_ids
-from pruner.orchestrator.queue import candidates, select_next
+from pruner.orchestrator.queue import blocked, candidates, select_next
 from pruner.orchestrator.research import ResearchPhase, queries_of
 from pruner.orchestrator.steering import Job
 from pruner.orchestrator.synthesis import SynthesisPhase, baseline_text
@@ -316,6 +316,11 @@ class Orchestrator:
         if all(n is not plan.parent for n in state.nodes) or any(
                 c.parent_id == plan.parent.id and c.branch_conclusion for c in state.nodes):
             return  # a fork or a person's conclusion meanwhile ended what this step was about
+        stopped = self._no_growth(state, plan.parent)
+        if stopped:
+            host._log(state, plan.parent.id, LogEntry(
+                kind="decision", title="No new hypotheses here", text=stopped, phase="synthesis"))
+            return
         await self.hypothesis.expand(host, state, plan.parent, mode=plan.mode, brief=plan.brief,
                                      count=plan.count)
         # Manual mode: after a step the wrong way, going back is always one of the options.
@@ -365,6 +370,8 @@ class Orchestrator:
                 FinalReport, prompt, model=self.cfg.agent_synthesis_model,
                 purpose="final_report")
             answer, title = out.value.answer, out.value.title
+        except LLMCancelled:  # a stop: not a missing report
+            raise
         except LLMError:  # a missing report should not lose the person's conclusion
             answer = f"Concluded at {node.id}.\nBranch:\n{branches_text(path)}"
         title = " ".join(title.split())[:120]
@@ -395,8 +402,8 @@ class Orchestrator:
         revert = Node(
             id=next_node_ids(state.nodes, 1)[0], run_id=state.run.id, parent_id=node.id,
             depth=node.depth + 1, type="hypothesis", family="revert", status="pending",
-            phase="hypothesis", revert_to=target.id, version=target.version,
-            base_version=target.version,
+            phase="hypothesis", revert_to=target.id, version=code_base(target),
+            base_version=code_base(target),
             description=f"Revert to {target.id}: {target.description}"[:120],
             summary=f"revert to {target.id}'s code",
             hypothesis=HypothesisSpec(
@@ -440,6 +447,22 @@ class Orchestrator:
                    f"Propose a different change from here; do not repeat {wrong.id}'s."
                    if wrong is not None else ""))
 
+    @staticmethod
+    def _no_growth(state: LiveRun, node: Node, closed_ok: bool = False) -> str:
+        """Why nothing new may grow under `node` ("" if it may): it is parked, about to be
+        parked, closed, or under a parked node. New children there would never run, yet hold
+        budget."""
+        by_id = {n.id: n for n in state.nodes}
+        if node.status == "parked" or node.id in state.fork_parks:
+            return f"{node.id} is parked (or about to be)."
+        if node.pending_action == "park":
+            return f"{node.id} is about to be parked by a person."
+        if node.closed and not closed_ok:
+            return f"{node.id} is closed."
+        if blocked(node, by_id) and not (closed_ok and node.closed):
+            return f"{node.id} is under a parked or closed node."
+        return ""
+
     # ---- manual mode
 
     @staticmethod
@@ -479,6 +502,11 @@ class Orchestrator:
     async def _run_job(self, host: RunManager, state: LiveRun, job: Job) -> None:
         node = next((n for n in state.nodes if n.id == job.node_id), None)
         if node is None or job not in state.jobs:  # gone, or dropped (an undone fork)
+            return
+        if node.status == "parked" or self._no_growth(state, node, closed_ok=True):
+            host._log(state, node.id, LogEntry(
+                kind="decision", title="No new hypotheses here",
+                text=self._no_growth(state, node, closed_ok=True) or f"{node.id} is parked."))
             return
         room = room_under(state.run, state.nodes, node)
         if room <= 0:
@@ -566,6 +594,7 @@ class Orchestrator:
 
     async def _finish(self, host: RunManager, state: LiveRun) -> None:
         run = state.run
+        state.finishing = True  # an instruction from now on amends no tree and offers no fork
         self._clear_choice(host, state)
         # By now every branch that could run has run (the loop only ends on the budget or an empty
         # queue). The answer branches off the best node when the objectives are covered and it
@@ -598,6 +627,8 @@ class Orchestrator:
             out = await AgentSession(self.llm, self.cfg).run(
                 FinalReport, prompt, model=self.cfg.agent_synthesis_model, purpose="final_report")
             run.final_answer, title = out.value.answer, out.value.title
+        except LLMCancelled:  # a stop: not a missing report
+            raise
         except LLMError:  # the run's work is done; a missing report should not fail it
             run.final_answer = (f"Kept: {kept}.\nBranches:\n{branches_text(state.nodes)}\n"
                                 f"Findings:\n" + "\n".join(

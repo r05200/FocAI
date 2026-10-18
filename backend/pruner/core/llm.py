@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Generic, Literal, TypeVar
 
+import httpx
 from pydantic import BaseModel, ValidationError
 
 from pruner.core.config import Config, get_config
@@ -194,8 +195,10 @@ class LLM:
             if not key:
                 raise LLMError(f"{env} is not set (see .env.example)")
             from google import genai
+            from google.genai import types
 
-            self._client = genai.Client(api_key=key)
+            self._client = genai.Client(api_key=key, http_options=types.HttpOptions(
+                timeout=int(self.cfg.llm_timeout_s * 1000)))  # milliseconds
         return self._client
 
     def _record(self, purpose: str, tokens: TokenCount) -> None:
@@ -220,12 +223,15 @@ class LLM:
             if scope in self._stopped:
                 raise LLMCancelled(f"scope {scope!r} was stopped")
             await self._wait_turn()
+            if scope in self._stopped:
+                raise LLMCancelled(f"scope {scope!r} was stopped")
             task = asyncio.ensure_future(fn(**kwargs))
             self._inflight[task] = scope
             try:
                 return await task
             except asyncio.CancelledError:
-                if task in self._stopping:
+                me = asyncio.current_task()
+                if task in self._stopping and not (me is not None and me.cancelling()):
                     raise LLMCancelled("the call was stopped") from None
                 task.cancel()  # the caller itself was cancelled: do not leave the request running
                 raise
@@ -237,6 +243,15 @@ class LLM:
                     raise LLMError(f"Gemini API error {e.code}: {e.message}") from e
                 delay = _retry_delay(e, attempt)
                 log.warning("Gemini API error %s, retrying in %ss", e.code, delay)
+                await asyncio.sleep(delay)
+            except (httpx.TransportError, TimeoutError) as e:  # a dropped or stalled connection
+                if attempt == MAX_API_ATTEMPTS - 1:
+                    log.error("the Gemini %s API could not be reached (%s: %s)",
+                              self.role, type(e).__name__, e)
+                    raise LLMError(f"Gemini API unreachable: {type(e).__name__}: {e}") from e
+                delay = _retry_delay(None, attempt)
+                log.warning("Gemini API unreachable (%s), retrying in %ss", type(e).__name__,
+                            delay)
                 await asyncio.sleep(delay)
             finally:
                 self._inflight.pop(task, None)
@@ -336,8 +351,13 @@ class LLM:
                 resp = await self._call_api(self.client.aio.models.generate_content,
                                             model=model, contents=contents, config=config)
                 if not resp.candidates or resp.candidates[0].content is None:
-                    raise LLMError(f"{purpose}: the model returned no content")
-                content = resp.candidates[0].content
+                    reason = (resp.candidates[0].finish_reason if resp.candidates else
+                              "no candidates")
+                    log.warning("%s: the model returned no content (%s); treating it as an "
+                                "empty answer", purpose, reason)
+                    content = types.Content(role="model", parts=[])
+                else:
+                    content = resp.candidates[0].content
                 tokens = _tokens_of(resp)
                 out.api_calls += 1
                 self.cache.set(key, {"content": content.model_dump(mode="json", exclude_none=True),
