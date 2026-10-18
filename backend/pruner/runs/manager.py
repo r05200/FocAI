@@ -1094,10 +1094,26 @@ class RunManager:
 
     async def undo_fork(self, run_id: str, fork_id: str,
                         confirm_delete: bool = False) -> ForkRequest:
-        """Restore the tree saved just before the fork. UndoNeedsConfirm if nodes created since
-        would be deleted and confirm_delete is not set."""
+        """Restore the tree saved just before the fork, and the user's files as they were then
+        (experiments after the fork may have changed them). UndoNeedsConfirm if nodes created
+        since would be deleted and confirm_delete is not set."""
         state = self._running(run_id)
+        snap = self.store.fork_snapshot(run_id, fork_id)
         out = fork.undo(self, state, fork_id, confirm_delete)
+        version = snap.run.workspace.applied_version if snap and snap.run.workspace else None
+        if state.workspace is not None and version is not None:
+            try:
+                changed = await asyncio.to_thread(state.workspace.apply_version, version)
+            except (OSError, KeyError):
+                log.exception("could not put the files of run %s back after undo", run_id)
+                state.emitter.emit(Activity, message=(
+                    "The tree is restored, but the files could not be put back: check them "
+                    "(GET /runs/{id}/patch shows the changes from the originals)."))
+            else:
+                if changed:
+                    state.emitter.emit(Activity, message=(
+                        f"Your files are back as they were when the fork was confirmed "
+                        f"({len(changed)} file(s) rewritten)."))
         state.choice_changed.set()
         return out
 

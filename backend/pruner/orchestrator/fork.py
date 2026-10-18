@@ -36,7 +36,7 @@ from pruner.core.events import (
     SuggestionResolved,
 )
 from pruner.core.models import Decision, ForkRequest, ForkStep, LogEntry, Node, Run
-from pruner.orchestrator.actions import room_under
+from pruner.orchestrator.actions import room_under, why_blocked
 from pruner.orchestrator.context import ancestors
 from pruner.orchestrator.human import IllegalAction
 from pruner.orchestrator.steering import Job
@@ -256,6 +256,14 @@ def confirm(host: RunManager, state: LiveRun, fork_id: str, at: str | None,
                  "Web search is not set up, so rely on the code, the vault and the findings."))
         state.jobs.append(Job(fork_at.id, "new_hypothesis", brief, count=min(2, room),
                               fork_id=fork.id))
+    else:  # say so: the fork still parks, but nothing new will grow from F
+        why = why_blocked(run, state.nodes, fork_at)
+        host._log(state, fork_at.id, LogEntry(
+            kind="decision", title="No new hypotheses after the fork",
+            text=f"Nothing new can grow from {fork_at.id}: {why}."))
+        host._emit(state, Activity, node_id=fork_at.id, message=(
+            f"The fork parks as confirmed, but no new hypotheses are queued at {fork_at.id}: "
+            f"{why}."))
     fork.status, fork.confirmed_at_node = "confirmed", fork_at.id
     fork.park_ids = parked + deferred
     _close_suggestion(host, state, fork, "confirmed")
