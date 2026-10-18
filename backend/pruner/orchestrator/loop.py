@@ -66,7 +66,7 @@ from pruner.core.events import (
     VaultRetrieved,
 )
 from pruner.core.llm import LLM, LLMCancelled, LLMError
-from pruner.core.models import DeadEnd, HypothesisSpec, LogEntry, Node
+from pruner.core.models import DeadEnd, HypothesisSpec, LogEntry, Node, RunIdea
 from pruner.orchestrator import fork, steering
 from pruner.orchestrator.actions import experiments_run, plan_action, room_under, why_blocked
 from pruner.orchestrator.context import ancestors, best_node, code_base, previous_measured
@@ -94,6 +94,26 @@ class FinalReport(BaseModel):
     title: str = ""  # a headline: the conclusion node's label
     answer: str
     steps: list[StepReason] = []  # how the run got to its answer, one entry per step that led there
+    sources: list[str] = []  # the nodes the answer draws on (positive or negative): its edges
+
+
+def report_vault_text(ideas: list[RunIdea]) -> str:
+    """The whole run vault for the final report, each idea with the nodes it came from."""
+    lines = []
+    for i in ideas:
+        kind = "branch finding" if i.kind == "branch_finding" else "idea"
+        sure = f", {i.confidence:.0%} sure" if i.confidence is not None else ""
+        lines.append(f"- [{', '.join(i.node_ids) or '-'}] ({kind}{sure}) {i.title}: {i.summary}")
+    return "\n".join(lines) or "(the run vault is empty)"
+
+
+def report_sources(nodes: list[Node], sources: list[str], fallback: list[str]) -> list[str]:
+    """The report's source ids that are real branch nodes (no root, no conclusion), in tree
+    order; the fallback when it named none."""
+    named = set(sources)
+    ids = [n.id for n in nodes
+           if n.id in named and n.parent_id is not None and n.type != "conclusion"]
+    return ids or fallback
 
 
 def step_reason_logs(steps: list[StepReason]) -> list[LogEntry]:
@@ -383,13 +403,15 @@ class Orchestrator:
             findings="\n".join(f"- {f.node_id or '-'} [{f.verdict}] {f.text}"
                                for f in findings) or "(none)",
             branches=branches_text(path),
+            run_vault=report_vault_text([i for i in state.ideas if on_path & set(i.node_ids)]),
             kept=f"this branch only, ending at {node.id}: {node.summary or node.description}")
-        title, steps = "", []
+        title, steps, sources = "", [], []
         try:
             out = await AgentSession(self.llm, self.cfg).run(
                 FinalReport, prompt, model=self.cfg.agent_synthesis_model,
                 purpose="final_report")
             answer, title, steps = out.value.answer, out.value.title, out.value.steps
+            sources = out.value.sources
         except LLMCancelled:  # a stop: not a missing report
             raise
         except LLMError:  # a missing report should not lose the person's conclusion
@@ -401,7 +423,8 @@ class Orchestrator:
             decided_by="human", branch_conclusion=True,
             description=f"Conclusion: {title}" if title else f"Conclusion at {node.id}",
             summary=(answer.strip().splitlines() or [""])[0][:200], result=answer,
-            combines=[n.id for n in path if n.synthesis is not None],
+            combines=report_sources(path, sources,
+                                    [n.id for n in path if n.synthesis is not None]),
             criteria_progress=sorted({o for n in path if n.status == "done"
                                       for o in n.criteria_progress}))
         host._add_outside_step(state, conclusion)
@@ -643,22 +666,25 @@ class Orchestrator:
                       else baseline_text(state.nodes)),
             findings="\n".join(f"- {f.node_id or '-'} [{f.verdict}] {f.text}"
                                for f in state.findings) or "(none)",
-            branches=branches_text(state.nodes), kept=kept)
-        title, steps = "", []
+            branches=branches_text(state.nodes), run_vault=report_vault_text(state.ideas),
+            kept=kept)
+        title, steps, sources = "", [], []
         try:
             out = await AgentSession(self.llm, self.cfg).run(
                 FinalReport, prompt, model=self.cfg.agent_synthesis_model, purpose="final_report")
             run.final_answer, title, steps = out.value.answer, out.value.title, out.value.steps
+            sources = out.value.sources
         except LLMCancelled:  # a stop: not a missing report
             raise
         except LLMError:  # the run's work is done; a missing report should not fail it
             run.final_answer = (f"Kept: {kept}.\nBranches:\n{branches_text(state.nodes)}\n"
                                 f"Findings:\n" + "\n".join(
                                     f"- [{f.verdict}] {f.text}" for f in state.findings))
-        self._conclude(host, state, title, steps)
+        self._conclude(host, state, title, steps, sources)
 
     def _conclude(self, host: RunManager, state: LiveRun, title: str = "",
-                  steps: list[StepReason] | None = None) -> Node:
+                  steps: list[StepReason] | None = None,
+                  sources: list[str] | None = None) -> Node:
         """The answer as a conclusion node, a child of the node the run ended on."""
         existing = next((n for n in state.nodes if n.type == "conclusion"
                          and not n.branch_conclusion), None)
@@ -674,7 +700,9 @@ class Orchestrator:
                     parent_id=parent.id, depth=parent.depth + 1, type="conclusion",
                     status="done", phase="complete", decided_by="agent",
                     description=f"Conclusion: {title}" if title else "Conclusion",
-                    combines=[n.id for n in state.nodes if n.synthesis is not None],  # every branch
+                    combines=report_sources(  # the nodes it draws on, else every branch
+                        state.nodes, sources or [],
+                        [n.id for n in state.nodes if n.synthesis is not None]),
                     summary=(answer.strip().splitlines() or [""])[0][:200], result=answer,
                     criteria_progress=sorted({o for n in state.nodes if n.status == "done"
                                               for o in n.criteria_progress}))

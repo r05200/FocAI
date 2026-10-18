@@ -108,7 +108,6 @@
       "pending_action": null,
       "awaiting_choice": false,
       "revert_to": null,
-      "learned_ids": [],
       "branch_conclusion": false,
       "tool_calls": {},
       "created_at": 1760000001.0
@@ -202,7 +201,6 @@
       "pending_action": null,
       "awaiting_choice": false,
       "revert_to": null,
-      "learned_ids": [],
       "branch_conclusion": false,
       "tool_calls": {},
       "created_at": 1760000004.0
@@ -260,7 +258,6 @@
       "pending_action": null,
       "awaiting_choice": false,
       "revert_to": null,
-      "learned_ids": [],
       "branch_conclusion": false,
       "tool_calls": {},
       "created_at": 1760000004.0
@@ -318,7 +315,6 @@
       "pending_action": null,
       "awaiting_choice": false,
       "revert_to": null,
-      "learned_ids": [],
       "branch_conclusion": false,
       "tool_calls": {},
       "created_at": 1760000004.0
@@ -417,7 +413,6 @@
       "pending_action": null,
       "awaiting_choice": false,
       "revert_to": null,
-      "learned_ids": [],
       "branch_conclusion": false,
       "tool_calls": {},
       "created_at": 1760000004.0
@@ -484,7 +479,6 @@
       "pending_action": null,
       "awaiting_choice": false,
       "revert_to": null,
-      "learned_ids": [],
       "branch_conclusion": false,
       "tool_calls": {},
       "created_at": 1760000004.0
@@ -570,7 +564,6 @@
       "pending_action": null,
       "awaiting_choice": false,
       "revert_to": null,
-      "learned_ids": [],
       "branch_conclusion": false,
       "tool_calls": {},
       "created_at": 1760000004.0
@@ -638,7 +631,6 @@
       "pending_action": null,
       "awaiting_choice": false,
       "revert_to": null,
-      "learned_ids": [],
       "branch_conclusion": false,
       "tool_calls": {},
       "created_at": 1760000004.0
@@ -697,7 +689,6 @@
       "pending_action": null,
       "awaiting_choice": false,
       "revert_to": null,
-      "learned_ids": [],
       "branch_conclusion": false,
       "tool_calls": {},
       "created_at": 1760000014.0
@@ -760,7 +751,6 @@
       "pending_action": null,
       "awaiting_choice": false,
       "revert_to": null,
-      "learned_ids": [],
       "branch_conclusion": false,
       "tool_calls": {},
       "created_at": 1760000014.0
@@ -853,7 +843,6 @@
       "pending_action": null,
       "awaiting_choice": false,
       "revert_to": null,
-      "learned_ids": [],
       "branch_conclusion": false,
       "tool_calls": {},
       "created_at": 1760000004.0
@@ -862,53 +851,6 @@
   },
   {
     "seq": 19,
-    "run_id": "r_fixture",
-    "ts": 1760000031.0,
-    "type": "vault_item_added",
-    "item": {
-      "id": "v_c1",
-      "person": "alice",
-      "kind": "correction",
-      "title": "[fixture] Correction: latency framing is worth a look",
-      "summary": "I restored a parked speculative-decoding branch; the latency angle was new.",
-      "tags": [
-        "speculative-decoding",
-        "latency"
-      ],
-      "source_text": "Human override: restore n_spec.",
-      "investigate": false,
-      "position": null,
-      "auto_position": null,
-      "retrieval_count": 0,
-      "created_at": 1760000031.0
-    },
-    "edges": [
-      {
-        "source": "v_c1",
-        "target": "v_a2",
-        "weight": 0.81,
-        "relation": "contradicts",
-        "reason": "The restored branch was useful, so the topic was not fully covered."
-      },
-      {
-        "source": "v_c1",
-        "target": "v_b2",
-        "weight": 0.77,
-        "relation": "agrees",
-        "reason": "Both conclude the end-user latency angle is worth keeping."
-      }
-    ]
-  },
-  {
-    "seq": 20,
-    "run_id": "r_fixture",
-    "ts": 1760000031.0,
-    "type": "activity",
-    "message": "Added your correction to your vault.",
-    "node_id": null
-  },
-  {
-    "seq": 21,
     "run_id": "r_fixture",
     "ts": 1760000032.0,
     "type": "node_updated",
@@ -985,7 +927,6 @@
       "pending_action": null,
       "awaiting_choice": false,
       "revert_to": null,
-      "learned_ids": [],
       "branch_conclusion": false,
       "tool_calls": {},
       "created_at": 1760000004.0
@@ -993,7 +934,7 @@
     "change": "running"
   },
   {
-    "seq": 22,
+    "seq": 20,
     "run_id": "r_fixture",
     "ts": 1760000040.0,
     "type": "node_updated",
@@ -1072,7 +1013,6 @@
       "pending_action": null,
       "awaiting_choice": false,
       "revert_to": null,
-      "learned_ids": [],
       "branch_conclusion": false,
       "tool_calls": {},
       "created_at": 1760000004.0
@@ -1080,7 +1020,7 @@
     "change": "done"
   },
   {
-    "seq": 23,
+    "seq": 21,
     "run_id": "r_fixture",
     "ts": 1760000040.0,
     "type": "activity",
@@ -1088,7 +1028,7 @@
     "node_id": "n_spec"
   },
   {
-    "seq": 24,
+    "seq": 22,
     "run_id": "r_fixture",
     "ts": 1760000041.0,
     "type": "question_asked",
@@ -1105,7 +1045,7 @@
     }
   },
   {
-    "seq": 25,
+    "seq": 23,
     "run_id": "r_fixture",
     "ts": 1760000094.0,
     "type": "run_completed",

@@ -3,14 +3,13 @@ import ForceGraph3D, { type ForceGraphMethods, type LinkObject, type NodeObject 
 import { MOUSE, Plane, Raycaster, Vector2, Vector3, type Object3D, type PerspectiveCamera } from 'three'
 import type { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { isTyping, useSpacePan } from '../../hooks/useSpacePan'
-import { EASE_OUT, flyCamera, type Flight, type Vec3 } from '../../lib/cameraFly'
+import { EASE_IN, EASE_OUT, flyCamera, MAP_LEAVE_MS, markDive, untilDiveEnds, type Flight, type Vec3 } from '../../lib/cameraFly'
 import { CARD_H, CARD_W, type BlackBorder } from '../../lib/vaultSprites'
 import { SIDEBAR_RAIL } from '../../store/uiStore'
 import { useVaultStore, type VaultTool } from '../../store/vaultStore'
 import { CursorIcon, FitIcon, HandIcon, LayoutIcon, MinusIcon, MoveIcon, PlusIcon, ResetViewIcon, TargetIcon } from '../ui/Icons'
 
 const FOCUS_DIST = 900 // camera distance when focused on the central node (shows its neighbourhood)
-const FLY_FROM = 2600 // how far out the fly-in starts
 const FLATTEN = 0.06 // pull toward z=0: head-on it reads like a 2D map, rotating reveals depth
 
 type Control = 'in' | 'out' | 'center' | 'reset' | 'fit'
@@ -94,7 +93,8 @@ interface MindMapProps<N extends MindMapNode, L extends object> {
   // How the camera frames the map when the tab opens: on the focus point, or zoomed out to fit
   // every card (better for maps that are spread out).
   openWith?: 'focus' | 'fit'
-  // Changing this re-runs the fly-in (e.g. pass the selected person).
+  // Changing this swaps maps with a dive (e.g. pass the selected person): the old map zooms in
+  // under a cover, the new one is laid out behind it and revealed.
   resetKey?: string
   // Show the Move tool: drag a card to reposition it. Called once, when the drop happens, with the
   // card's new coordinates (it stays pinned there). Omit both to make the map read-only.
@@ -139,16 +139,31 @@ export default function MindMap3D<N extends MindMapNode, L extends object>({
   const box = useRef<HTMLDivElement>(null)
   const [size, setSize] = useState({ width: 0, height: 0 })
 
+  // The map on screen. A new `resetKey` doesn't swap it straight away: the old map stays while
+  // the camera dives into it under the cover (see the switch effect below). Data changes under
+  // the same key (an added card) go straight through.
+  const [shown, setShown] = useState({ data, key: resetKey })
+  if (shown.key === resetKey && shown.data !== data) setShown({ data, key: resetKey })
+  const latest = useRef({ data, key: resetKey })
+  useEffect(() => {
+    latest.current = { data, key: resetKey }
+  }, [data, resetKey])
+  // A cover over the canvas, in the page background: it hides the map until the camera is placed
+  // (no stray frame of the library's default view) and during a switch. `epoch` counts the maps
+  // shown; each new one is revealed from under the cover.
+  const [cover, setCover] = useState(true)
+  const [epoch, setEpoch] = useState(0)
+
   // Card signal (vault store `cardSignal`), one at a time and at most once per SIGNAL_MS: the card's
   // border turns black, sweeping clockwise round from the middle of its top edge (SWEEP_MS); a line
   // shoots up out of that point and off the screen; after a pause the colour sweeps back round
   // (RESTORE_MS), finishing exactly SIGNAL_MS after it began. Driven frame by frame on the card's
   // own texture, found through the node each frame (cards are rebuilt when the selection changes).
   const [beams, setBeams] = useState<BeamSpec[]>([])
-  const nodesNow = useRef(data.nodes)
+  const nodesNow = useRef(shown.data.nodes)
   useEffect(() => {
-    nodesNow.current = data.nodes
-  }, [data.nodes])
+    nodesNow.current = shown.data.nodes
+  }, [shown.data.nodes])
   useEffect(() => {
     if (!signals) return
     let busyUntil = 0
@@ -236,21 +251,23 @@ export default function MindMap3D<N extends MindMapNode, L extends object>({
     else setForcesSet(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- forcesSet only gates the first run
   }, [ready, configureForces])
-  const graphData = useMemo(() => (forcesSet ? data : { nodes: [], links: [] }), [forcesSet, data])
+  const graphData = useMemo(() => (forcesSet ? shown.data : { nodes: [], links: [] }), [forcesSet, shown.data])
 
-  // Hidden views keep their WebGL canvas mounted; stop rendering it while off screen.
+  // Hidden views keep their WebGL canvas mounted; stop rendering it while off screen (once the dive
+  // out of it has played).
   useEffect(() => {
     const g = fg.current
     if (!g) return
-    if (active) g.resumeAnimation()
-    else g.pauseAnimation()
+    if (active) return void g.resumeAnimation()
+    const t = setTimeout(() => g.pauseAnimation(), LEAVE_MS)
+    return () => clearTimeout(t)
   }, [active, ready])
 
   const flight = useRef<Flight | null>(null)
 
   // Where "centre" is: the focus card if there is one, otherwise the middle of all cards together.
   function focusPoint(): Vec3 | null {
-    const placed = (data.nodes as Node[]).filter((n) => n.x !== undefined)
+    const placed = (shown.data.nodes as Node[]).filter((n) => n.x !== undefined)
     if (placed.length === 0) return null
     if (focusId) {
       const n = placed.find((d) => d.id === focusId) ?? placed[0]
@@ -292,16 +309,9 @@ export default function MindMap3D<N extends MindMapNode, L extends object>({
     return fit ?? { pos: { ...look, z: look.z + FOCUS_DIST }, look }
   }
 
-  function focusCentral(ms: number, intro = false) {
+  function focusCentral(ms: number) {
     const look = focusPoint()
     if (!look) return
-    if (intro) {
-      // Start far out, straight on, then glide in.
-      const end = homePose()!
-      const from = { pos: { ...end.look, z: end.look.z + FLY_FROM }, look: end.look }
-      fg.current?.cameraPosition(from.pos, from.look, 0)
-      return fly(end, ms, from, EASE_OUT)
-    }
     const d = viewDir()
     fly({ pos: { x: look.x + d.x * FOCUS_DIST, y: look.y + d.y * FOCUS_DIST, z: look.z + d.z * FOCUS_DIST }, look }, ms)
   }
@@ -309,7 +319,7 @@ export default function MindMap3D<N extends MindMapNode, L extends object>({
   // Camera pose that frames every card when viewed along `dir`.
   function fitPose(dir: Vec3): { pos: Vec3; look: Vec3 } | null {
     const g = fg.current
-    const nodes = data.nodes as Node[]
+    const nodes = shown.data.nodes as Node[]
     if (!g || nodes.length === 0) return null
     const xs = nodes.map((n) => n.x ?? 0)
     const ys = nodes.map((n) => n.y ?? 0)
@@ -344,26 +354,82 @@ export default function MindMap3D<N extends MindMapNode, L extends object>({
     }
   }, [])
 
-  // On tab entry the camera is already at its home pose: the tab switch does the zooming, and a
-  // fly-in from far out would show the map tiny and off-centre while the view fades in. When
-  // `resetKey` changes on screen (e.g. switching whose vault is shown) it flies in. Both wait for
-  // the real layout; plain data changes (an added card) don't move the camera.
-  const shownFor = useRef<{ key: unknown } | null>(null)
+  // A new map comes out from under the cover: the camera starts a little further back and glides
+  // in to its home pose while the cover fades away.
+  function reveal() {
+    const g = fg.current
+    const end = homePose()
+    if (g && end) {
+      const back = (a: number, b: number) => b + (a - b) * REVEAL_FROM
+      const from = {
+        pos: { x: back(end.pos.x, end.look.x), y: back(end.pos.y, end.look.y), z: back(end.pos.z, end.look.z) },
+        look: end.look,
+      }
+      g.cameraPosition(from.pos, from.look, 0)
+      fly(end, REVEAL_MS, from, EASE_OUT)
+    }
+    setCover(false)
+  }
+
+  // Leaving a map: the camera dives into it while the cover fades in. It says when it will be
+  // done (markDive), so a map coming on screen meanwhile waits for it before revealing itself.
+  function dive() {
+    setCover(true)
+    markDive()
+    const look = focusPoint()
+    if (!look || !fg.current) return
+    const { pos } = cameraState()
+    const zoom = (a: number, b: number) => b + (a - b) * LEAVE_ZOOM
+    fly({ pos: { x: zoom(pos.x, look.x), y: zoom(pos.y, look.y), z: zoom(pos.z, look.z) }, look }, LEAVE_MS, undefined, EASE_IN)
+  }
+
+  // Placing the camera waits for the real layout: the library applies new data on a short timer
+  // and only then runs its warm-up, so card positions read right away would be the old (or no)
+  // ones. Every time a map comes on screen (its first showing, a tab switch, a switch of map) it
+  // is revealed from under the cover; leaving it dives in, so the next entry starts covered again.
+  const revealed = useRef<number | null>(null)
   useEffect(() => {
     if (!active || !ready || !forcesSet) return
-    const switched = shownFor.current !== null && shownFor.current.key !== resetKey
-    shownFor.current = { key: resetKey }
-    // The library applies new data on a short timer and only then runs its warm-up layout, so
-    // card positions read right now would be the old (or no) ones. Frame the map just after.
+    const wait = Math.max(LAYOUT_SETTLE_MS, untilDiveEnds())
     const t = setTimeout(() => {
-      if (switched) return focusCentral(1400, true)
-      flight.current?.cancel()
-      const home = homePose()
-      if (home) fg.current?.cameraPosition(home.pos, home.look, 0)
-    }, LAYOUT_SETTLE_MS)
+      revealed.current = epoch
+      reveal()
+    }, wait)
     return () => clearTimeout(t)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- only on entry / view switch
-  }, [active, ready, forcesSet, resetKey])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only on entry / a new map
+  }, [active, ready, forcesSet, epoch])
+  const wasActive = useRef(active)
+  useEffect(() => {
+    const was = wasActive.current
+    wasActive.current = active
+    if (active || !was || revealed.current === null) return
+    revealed.current = null
+    dive()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when the map goes off screen
+  }, [active])
+
+  // Switching maps on screen (a new `resetKey`): the camera dives into the old map while the cover
+  // fades in, then the new map is swapped in behind the cover (and revealed by the effect above).
+  // Off screen, or before anything was shown, the swap is immediate.
+  const leaving = useRef(false)
+  useEffect(() => {
+    const swap = () => {
+      leaving.current = false
+      setShown(latest.current)
+      setEpoch((e) => e + 1)
+    }
+    if (shown.key === resetKey) {
+      // Switched back before the dive ended: show it again from under the cover.
+      if (leaving.current) swap()
+      return
+    }
+    if (!active || !ready || !forcesSet || revealed.current === null) return swap()
+    leaving.current = true
+    dive()
+    const t = setTimeout(swap, LEAVE_MS)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when the key or visibility changes
+  }, [resetKey, shown.key, active, ready, forcesSet])
 
   // Select tool: left-drag rotates. Pan tool or Space: left-drag moves. Right-drag does the other.
   useEffect(() => {
@@ -439,7 +505,7 @@ export default function MindMap3D<N extends MindMapNode, L extends object>({
     if (!d) return
     if (frozen.current.length === 0) {
       // First move of this drag: freeze every card that isn't already pinned.
-      for (const other of data.nodes as Node[]) {
+      for (const other of shown.data.nodes as Node[]) {
         if (other === n || other.fx !== undefined) continue
         Object.assign(other, { fx: other.x, fy: other.y, fz: other.z })
         frozen.current.push(other)
@@ -555,6 +621,13 @@ export default function MindMap3D<N extends MindMapNode, L extends object>({
           />
         )}
       </div>
+      <div
+        aria-hidden="true"
+        className={`absolute inset-0 bg-bg transition-opacity ${
+          cover ? 'ease-in' : 'pointer-events-none ease-out'
+        }`}
+        style={{ opacity: cover ? 1 : 0, transitionDuration: `${cover ? LEAVE_MS : REVEAL_FADE_MS}ms` }}
+      />
 
       <HoverTooltip info={hovered && active ? tooltip(hovered as unknown as N) : null} box={box} />
       {beams.map((b) => (
@@ -614,6 +687,13 @@ export default function MindMap3D<N extends MindMapNode, L extends object>({
 
 // Time for the library to take new data and run its warm-up layout (it debounces by ~1ms).
 const LAYOUT_SETTLE_MS = 60
+// Switching maps: the dive into the old one (camera ends at LEAVE_ZOOM of its distance), then the
+// reveal of the new one (camera starts REVEAL_FROM times its home distance and glides in).
+const LEAVE_MS = MAP_LEAVE_MS
+const LEAVE_ZOOM = 0.12
+const REVEAL_MS = 1100
+const REVEAL_FADE_MS = 700
+const REVEAL_FROM = 1.5
 const SIGNAL_MS = 5000
 const SWEEP_MS = 500
 const RESTORE_MS = 2000

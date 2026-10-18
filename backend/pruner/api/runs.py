@@ -6,7 +6,13 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from pruner.api.common import SSE_HEADERS, SSE_RESPONSES
-from pruner.api.deps import get_agent_llm, get_run_manager, get_run_store, get_supporting_llm
+from pruner.api.deps import (
+    get_agent_llm,
+    get_fork_agent_llm,
+    get_run_manager,
+    get_run_store,
+    get_supporting_llm,
+)
 from pruner.core.llm import LLM
 from pruner.core.models import (
     ForkConfirmRequest,
@@ -223,6 +229,7 @@ async def stop_run(
     manager: Manager,
     agent_llm: Annotated[LLM, Depends(get_agent_llm)],
     supporting_llm: Annotated[LLM, Depends(get_supporting_llm)],
+    fork_agent_llm: Annotated[LLM, Depends(get_fork_agent_llm)],
 ) -> StopResult:
     """Stop the run now. Its LLM calls in flight (agent and supporting) are cancelled (the Gemini
     request is abandoned and the caller gets LLMCancelled) and its later calls are refused, so
@@ -237,8 +244,8 @@ async def stop_run(
         raise HTTPException(status_code=404, detail="run not found")
     if snapshot.run.status != "running":
         raise HTTPException(status_code=409, detail=f"run already {snapshot.run.status}")
-    # The agent and the supporting LLM are separate instances; the run may be using both.
-    cancelled = agent_llm.stop(run_id) + supporting_llm.stop(run_id)
+    # The agent, fork agent and supporting LLMs are separate instances; the run may use any.
+    cancelled = agent_llm.stop(run_id) + supporting_llm.stop(run_id) + fork_agent_llm.stop(run_id)
     try:
         await manager.stop(run_id)  # ends the run's tasks, then saves the tree as it is
     except RunNotRunning as e:  # a second Stop while the first is still underway

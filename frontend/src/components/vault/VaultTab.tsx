@@ -38,7 +38,8 @@ export default function VaultTab({ active }: { active: boolean }) {
         {!noVaults && !loading && <VaultGraph graph={graph} people={people} active={active} />}
 
         <header className="absolute top-4 left-5">
-          <div className="flex items-center gap-3">
+          {/* gap-7: 16px more than the old gap-3 between the title and + Knowledge */}
+          <div className="flex items-center gap-7">
             <h1 className="text-lg font-semibold">{vaultName(person)}</h1>
             {viewOnly ? (
               <span className="rounded-md border border-line px-1.5 py-0.5 text-xs text-muted">View only</span>

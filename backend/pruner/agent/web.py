@@ -1,6 +1,6 @@
 """Web research for the agent: search, fetch, and checking that cited findings are real.
 
-- SearchProvider: the web search API. "brave" (BraveSearch) is built in; with none set,
+- SearchProvider: the web search API. "exa" (ExaSearch) is built in; with none set,
   get_search_provider() returns NoSearchProvider, whose search() raises SearchNotConfigured.
   To add another, write a class with an
   async `search(query, k)` returning SearchHit objects, and return it from get_search_provider()
@@ -61,34 +61,36 @@ class NoSearchProvider:
             "pruner/agent/web.py)")
 
 
-class BraveSearch:
-    """The Brave Search API (api.search.brave.com, key in SEARCH_API_KEY). Not yet checked
-    against the live API: the request and response shapes follow Brave's documented web search
-    endpoint."""
+class ExaSearch:
+    """The Exa search API (api.exa.ai, key in SEARCH_API_KEY). Not yet checked against the live
+    API: the request and response shapes follow Exa's documented /search endpoint. Exa searches by
+    meaning, so the agent's natural-language queries work as they are. Its highlights (the passages
+    that best match the query) are used as the snippet."""
 
-    URL = "https://api.search.brave.com/res/v1/web/search"
+    URL = "https://api.exa.ai/search"
 
     def __init__(self, api_key: str, client: httpx.AsyncClient | None = None,
                  timeout_s: float = 15.0) -> None:
         if not api_key:
-            raise SearchNotConfigured("PRUNER_SEARCH_PROVIDER is brave but SEARCH_API_KEY is "
-                                      "empty")
+            raise SearchNotConfigured("PRUNER_SEARCH_PROVIDER is exa but SEARCH_API_KEY is empty")
         self._key, self._client, self._timeout = api_key, client, timeout_s
 
     async def search(self, query: str, k: int) -> list[SearchHit]:
         client = self._client or httpx.AsyncClient()
         try:
-            resp = await client.get(self.URL, params={"q": query, "count": k},
-                                    headers={"Accept": "application/json",
-                                             "X-Subscription-Token": self._key},
-                                    timeout=self._timeout)
+            resp = await client.post(self.URL,
+                                     json={"query": query, "numResults": k,
+                                           "contents": {"highlights": True}},
+                                     headers={"Accept": "application/json",
+                                              "x-api-key": self._key},
+                                     timeout=self._timeout)
             resp.raise_for_status()
-            results = (resp.json().get("web") or {}).get("results") or []
+            results = resp.json().get("results") or []
         finally:
             if self._client is None:
                 await client.aclose()
-        return [SearchHit(title=_strip_tags(r.get("title", "")), url=r["url"],
-                          snippet=_strip_tags(r.get("description", "")))
+        return [SearchHit(title=_strip_tags(r.get("title") or ""), url=r["url"],
+                          snippet=_strip_tags(" ".join(r.get("highlights") or [])))
                 for r in results[:k] if r.get("url")]
 
 
@@ -101,8 +103,8 @@ def get_search_provider(cfg: Config | None = None) -> SearchProvider:
     name = cfg.search_provider.strip().lower()
     if not name:
         return NoSearchProvider()
-    if name == "brave":
-        return BraveSearch(cfg.search_api_key)
+    if name == "exa":
+        return ExaSearch(cfg.search_api_key)
     raise SearchNotConfigured(f"unknown search provider {cfg.search_provider!r}")
 
 

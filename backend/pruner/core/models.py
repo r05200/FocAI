@@ -317,9 +317,6 @@ class Node(BaseModel):
     # way) and try something else from there. No experiment runs for it: the target's result is
     # already known. The UI can show it as "Revert to <id>".
     revert_to: str | None = None
-    # Items this node filed in the run owner's vault ("learned"), so undoing a fork that
-    # created the node can remove them too.
-    learned_ids: list[str] = Field(default_factory=list)
     # A conclusion a person asked for at one node (POST .../nodes/{id}/conclude), as opposed to
     # the run's own conclusion written when the run ends.
     branch_conclusion: bool = False

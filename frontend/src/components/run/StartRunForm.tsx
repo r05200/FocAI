@@ -20,6 +20,11 @@ const SAMPLE_DIRECTIVE_IDS = new Set(SAMPLE_DIRECTIVES.map((d) => d.id))
 
 // Dropdown value for "everyone's vaults" (never a real person: those match PERSON_PATTERN).
 const TEAM = '__team'
+// Dropdown value for "no vault": the run is scored without any, and its agent can't search one.
+const NO_VAULT = '__none'
+// Whose name a vault-less run is started under (the backend wants a person on every run). Never a
+// real vault's owner: with no vault people, the backend's research searches the primary person's.
+const NO_VAULT_PERSON = 'you'
 
 const QUESTION_MIN = 3
 const QUESTION_MAX = 2000
@@ -70,7 +75,10 @@ export default function StartRunForm({ ended = false, textHidden = false }: { en
     remote.status === 'ok'
       ? people.filter((p) => remote.vaults.some((v) => v.person === p))
       : [...people.filter((p) => !SAMPLE_PEOPLE.includes(p)), ...people.filter((p) => SAMPLE_PEOPLE.includes(p))]
-  const vault = vaultChoice === TEAM || (vaultChoice && vaults.includes(vaultChoice)) ? vaultChoice : (vaults[0] ?? null)
+  const vault =
+    vaultChoice === NO_VAULT || vaultChoice === TEAM || (vaultChoice && vaults.includes(vaultChoice))
+      ? vaultChoice
+      : (vaults[0] ?? NO_VAULT)
   const busy = phase !== 'idle'
   // Pause/Play shows once a run is going (and stays, disabled, while it's being stopped).
   const canHold = phase === 'running' || phase === 'paused'
@@ -129,18 +137,24 @@ export default function StartRunForm({ ended = false, textHidden = false }: { en
     const usable = remoteNow.status === 'ok' ? vaults.filter((p) => remoteNow.vaults.some((v) => v.person === p)) : vaults
     const sendable = remoteNow.status === 'ok' ? remoteNow.vaults.map((v) => v.person) : usable
     const pool2 = usable.length ? usable : sendable
-    // A run is scored against someone's vault, so at least one has to exist.
-    if (pool2.length === 0) {
+    // A run is scored against someone's vault, so at least one has to exist (unless it uses none).
+    if (pool2.length === 0 && vault !== NO_VAULT) {
       setSending(false)
       return setError('Create a vault first (New vault in the sidebar); runs are scored against it.')
     }
-    const picked = vault && vault !== TEAM && pool2.includes(vault) ? vault : pool2[0]
+    const picked =
+      vault === NO_VAULT
+        ? NO_VAULT_PERSON
+        : vault && vault !== TEAM && pool2.includes(vault)
+          ? vault
+          : pool2[0]
     const body: StartRunRequest = {
       question,
       // Whose vault drives pruning: the one picked next to the + (the first vault until one is).
       // "Team vault" scores against everyone's vaults, with the first one as the primary.
       primary_person: picked,
-      ...(vault === TEAM ? { vault_people: pool2 } : {}),
+      // "No vault": an empty list, so neither the scorers nor the agent's search read any vault.
+      ...(vault === TEAM ? { vault_people: pool2 } : vault === NO_VAULT ? { vault_people: [] } : {}),
       // The backend takes directive texts, not ids, and appends them to the prompts as-is. The
       // browser-only sample directives aren't sent to a real backend.
       directives: chosen
@@ -342,17 +356,17 @@ export default function StartRunForm({ ended = false, textHidden = false }: { en
             <Dropdown
               compact
               aria-label="Vault for this run"
-              disabled={vaults.length === 0}
-              value={vault ?? ''}
+              value={vault}
               onChange={setVaultChoice}
-              options={
-                vaults.length === 0
-                  ? [{ value: '', label: 'No vaults' }]
-                  : [
+              options={[
+                ...(vaults.length > 0
+                  ? [
                       { value: TEAM, label: vaultName(null) },
                       ...vaults.map((p) => ({ value: p, label: vaultName(p), color: personColor(people, p) })),
                     ]
-              }
+                  : []),
+                { value: NO_VAULT, label: 'No vault' },
+              ]}
             />
           )}
 

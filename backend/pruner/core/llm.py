@@ -49,7 +49,9 @@ RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 MAX_API_ATTEMPTS = 3
 
 
-Role = Literal["agent", "supporting"]
+Role = Literal["agent", "fork_agent", "supporting"]
+# How many backup keys a role has (GEMINI_API_KEY_<ROLE>_2, _3): tried in order on a 429.
+BACKUP_KEYS: dict[str, int] = {"agent": 2, "fork_agent": 1, "supporting": 1}
 
 
 class LLMError(RuntimeError):
@@ -152,7 +154,7 @@ class LLM:
     def __init__(self, cfg: Config | None = None, client: Any = None,
                  cache_dir: Path | None = None, role: Role = "supporting") -> None:
         self.cfg = cfg or get_config()
-        self.role = role  # picks the API key: GEMINI_API_KEY_AGENT or GEMINI_API_KEY_SUPPORTING
+        self.role = role  # picks the API key: GEMINI_API_KEY_AGENT, _FORK_AGENT or _SUPPORTING
         self._client = client  # a google.genai.Client, or a stand-in in tests
         self.cache = DiskCache(cache_dir or self.cfg.cache_dir / "llm")
         self.usage: dict[str, TokenCount] = {}
@@ -161,7 +163,7 @@ class LLM:
         self._stopped: set[str] = set()  # scopes that were stopped
         self._last_call = 0.0  # monotonic time of the last API call (free-tier pacing)
         self._pace = asyncio.Lock()
-        self._key_gen = 0  # bumped when a 429 switches this LLM to its backup key
+        self._key_gen = 0  # bumped when a 429 switches this LLM to its next backup key
 
     @contextmanager
     def scope(self, name: str) -> Iterator[None]:
@@ -206,16 +208,21 @@ class LLM:
             timeout=int(self.cfg.llm_timeout_s * 1000)))  # milliseconds
 
     def _switch_to_backup_key(self) -> bool:
-        """After a 429: move this LLM to its backup key (GEMINI_API_KEY_<ROLE>_2) for good, if one
-        is set and not already in use. Quiet: it is only logged, never shown to the user."""
-        backup = getattr(self.cfg, f"gemini_api_key_{self.role}_2", "")
-        if not backup or self._key_gen > 0:
-            return False
-        self._client = self._make_client(backup)
-        self._key_gen += 1
-        log.warning("Gemini %s key hit a 429; switched to GEMINI_API_KEY_%s_2 and resuming",
-                    self.role, self.role.upper())
-        return True
+        """After a 429: move this LLM to its next backup key (GEMINI_API_KEY_<ROLE>_2, then _3
+        where the role has one) for good, skipping any that is not set. Each key is used once, so
+        when the last one is spent False is returned. Quiet: it is only logged, never shown to
+        the user."""
+        while self._key_gen < BACKUP_KEYS.get(self.role, 0):
+            n = self._key_gen + 2  # the first backup is _2
+            self._key_gen += 1
+            backup = getattr(self.cfg, f"gemini_api_key_{self.role}_{n}", "")
+            if not backup:
+                continue
+            self._client = self._make_client(backup)
+            log.warning("Gemini %s key hit a 429; switched to GEMINI_API_KEY_%s_%d and resuming",
+                        self.role, self.role.upper(), n)
+            return True
+        return False
 
     def _record(self, purpose: str, tokens: TokenCount) -> None:
         self.usage.setdefault(purpose, TokenCount()).add(tokens)

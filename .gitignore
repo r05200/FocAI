@@ -49,3 +49,6 @@ data/
 
 # Claude Code's local project settings and state
 .claude/
+
+# Personal study notes
+docs/ARCHITECTURE.md

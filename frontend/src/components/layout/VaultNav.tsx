@@ -4,7 +4,7 @@ import { personColor } from '../../lib/colors'
 import { splitVaults } from '../../lib/vaultAccess'
 import { useUiStore } from '../../store/uiStore'
 import { useVaultStore } from '../../store/vaultStore'
-import { PlusIcon, VaultIcon } from '../ui/Icons'
+import { ChevronDownIcon, PlusIcon, VaultIcon } from '../ui/Icons'
 import AddVaultDialog from '../vault/AddVault'
 import { vaultName } from '../../lib/vaultName'
 
@@ -28,10 +28,11 @@ function Heading({ children }: { children: string }) {
   )
 }
 
-// The sidebar's vault section: "Vaults" with Your Vaults (can be added to, plus a button to create
-// one) and Other Vaults (the team vault and teammates': view only). Picking one opens the Vault
-// tab on it. In the collapsed rail only the coloured dots show, in one column: the group labels and
-// the New vault entry only take room once the sidebar opens.
+// The sidebar's vault section: a "Vaults" button that drops down (it doesn't change the page) Your
+// Vaults (can be added to, plus a button to create one) and Other Vaults (the team vault and
+// teammates': view only). Picking one opens the Vault tab on it. Closed, only the vault symbol
+// shows. Open in the collapsed rail, only the coloured dots show, in one column: the group labels
+// and the New vault entry only take room once the sidebar opens.
 export default function VaultNav() {
   const people = useVaultPeople()
   const { yours, others } = splitVaults(people)
@@ -40,6 +41,7 @@ export default function VaultNav() {
   const person = useVaultStore((s) => s.person)
   const setPerson = useVaultStore((s) => s.setPerson)
   const [adding, setAdding] = useState(false)
+  const [open, setOpen] = useState(false)
 
   const item = (value: string | null, label: string, color: string) => {
     const active = tab === 'vault' && person === value
@@ -68,36 +70,63 @@ export default function VaultNav() {
 
   return (
     <section aria-label="Vaults" className="mt-1 flex min-h-0 flex-col">
-      <div className="flex h-10 items-center gap-3 px-3.5 text-muted">
+      <button
+        aria-expanded={open}
+        aria-controls="vault-nav-list"
+        aria-label="Vaults"
+        onClick={(e) => {
+          setOpen((o) => !o)
+          if (e.detail > 0) e.currentTarget.blur()
+        }}
+        // Marked like a tab while a vault is on screen, so it shows where you are even when closed.
+        className={`flex h-11 w-full shrink-0 items-center gap-3 overflow-hidden rounded-xl px-3.5 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-accent ${
+          tab === 'vault' && !open ? 'bg-elev text-fg' : 'text-muted hover:bg-hover hover:text-fg'
+        }`}
+      >
         <VaultIcon className="shrink-0" strokeWidth={1.6} />
-        <h2 className={`text-sm ${LABEL}`}>Vaults</h2>
-      </div>
-      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-        <Heading>Your Vaults</Heading>
-        <ul>
-          {yours.map((p) => item(p, vaultName(p), personColor(people, p)))}
-          <li className={EXPAND}>
-            <button
-              aria-label="New vault"
-              aria-haspopup="dialog"
-              onClick={(e) => {
-                setAdding(true)
-                if (e.detail > 0) e.currentTarget.blur()
-              }}
-              className={`${ITEM} text-muted hover:bg-hover hover:text-fg`}
-            >
-              <span className="grid w-5 shrink-0 place-items-center">
-                <PlusIcon width={16} height={16} />
-              </span>
-              <span className={LABEL}>New vault</span>
-            </button>
-          </li>
-        </ul>
-        <Heading>Other Vaults</Heading>
-        <ul>
-          {item(null, vaultName(null), 'var(--color-muted)')}
-          {others.map((p) => item(p, vaultName(p), personColor(people, p)))}
-        </ul>
+        <span className={LABEL}>Vaults</span>
+        <ChevronDownIcon
+          width={14}
+          height={14}
+          className={`ml-auto shrink-0 transition-[transform,opacity] duration-200 ${open ? 'rotate-180' : ''} ${LABEL}`}
+        />
+      </button>
+      {/* The list slides open and shut (grid rows 0fr <-> 1fr; minmax(0, ...) so a long list
+          scrolls inside the sidebar instead of overflowing it). */}
+      <div
+        id="vault-nav-list"
+        inert={!open}
+        className={`grid min-h-0 transition-[grid-template-rows,opacity] duration-200 ease-out ${
+          open ? 'grid-rows-[minmax(0,1fr)] opacity-100' : 'grid-rows-[minmax(0,0fr)] opacity-0'
+        }`}
+      >
+        <div className="min-h-0 overflow-x-hidden overflow-y-auto">
+          <Heading>Your Vaults</Heading>
+          <ul>
+            {yours.map((p) => item(p, vaultName(p), personColor(people, p)))}
+            <li className={EXPAND}>
+              <button
+                aria-label="New vault"
+                aria-haspopup="dialog"
+                onClick={(e) => {
+                  setAdding(true)
+                  if (e.detail > 0) e.currentTarget.blur()
+                }}
+                className={`${ITEM} text-muted hover:bg-hover hover:text-fg`}
+              >
+                <span className="grid w-5 shrink-0 place-items-center">
+                  <PlusIcon width={16} height={16} />
+                </span>
+                <span className={LABEL}>New vault</span>
+              </button>
+            </li>
+          </ul>
+          <Heading>Other Vaults</Heading>
+          <ul>
+            {item(null, vaultName(null), 'var(--color-muted)')}
+            {others.map((p) => item(p, vaultName(p), personColor(people, p)))}
+          </ul>
+        </div>
       </div>
       {adding && <AddVaultDialog people={people} onClose={() => setAdding(false)} />}
     </section>

@@ -1,7 +1,9 @@
 // Sample vault data (Alice and Bob, from the generated fixtures) that is shown in the vault no
 // matter what the backend has, so the map always has something in it while the real vaults fill up.
-// Backend data is shown alongside it. Set SEED_SAMPLE_DATA to false to turn all of this off.
-import type { Directive } from '../types'
+// Backend data is shown alongside it. When the backend is up it is also given its own copy of the
+// samples (vaultStore seedBackend); from then on that copy is shown instead of the browser's.
+// Set SEED_SAMPLE_DATA to false to turn all of this off.
+import type { Directive, VaultItemView } from '../types'
 import { fixtureVaultGraph } from './index'
 
 const SEED_SAMPLE_DATA = true
@@ -22,3 +24,16 @@ export const SAMPLE_DIRECTIVES: Directive[] = SEED_SAMPLE_DATA
       { id: 'dir_4', person: 'bob', text: 'Favour results that hold past 32k context.', created_at: 1759914000 },
     ]
   : []
+
+// The backend's copy of a sample has its own id, so it is recognised by what it says: the same
+// person and title (a card) or the same person and text (a directive).
+export const isSampleTwin = (sample: VaultItemView, item: VaultItemView) =>
+  sample.person === item.person && sample.title === item.title
+export const isSampleDirectiveTwin = (sample: Directive, d: Directive) =>
+  sample.person === d.person && sample.text === d.text
+
+// What vaultStore remembers about a sample once the backend has its copy (vaultStore
+// seededSamples), so that copy can be deleted for good: it isn't copied again, and the browser's
+// sample doesn't come back in its place.
+export const sampleCardKey = (n: VaultItemView) => `card:${n.person}:${n.title}`
+export const sampleDirectiveKey = (d: Directive) => `directive:${d.person}:${d.text}`

@@ -31,6 +31,22 @@ function cubicBezier(x1: number, y1: number, x2: number, y2: number) {
 const EASE_IN_OUT = cubicBezier(0.65, 0, 0.35, 1)
 // Fast out of the gate, settles slowly: good for the fly-in.
 export const EASE_OUT = cubicBezier(0.22, 1, 0.36, 1)
+// Slow start that keeps speeding up: good for diving into the map on the way out.
+export const EASE_IN = cubicBezier(0.55, 0, 1, 0.45)
+
+// How long a mind map takes to dive in under its cover when it is left (MindMap3D). AppShell holds
+// a map-to-map tab switch for as long, so the dive is seen before the next map is revealed.
+export const MAP_LEAVE_MS = 550
+
+// When the last map to dive out finishes, shared by every map: one coming on screen at the same
+// time (another tab's) waits for it before revealing itself.
+let diveEndsAt = 0
+export function markDive() {
+  diveEndsAt = performance.now() + MAP_LEAVE_MS
+}
+export function untilDiveEnds() {
+  return Math.max(0, diveEndsAt - performance.now())
+}
 
 const lerp = (a: number, b: number, k: number) => a + (b - a) * k
 

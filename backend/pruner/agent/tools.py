@@ -44,7 +44,7 @@ from pruner.core.config import Config, get_config
 from pruner.core.llm import LLMCancelled
 from pruner.core.models import Finding, HypothesisVerdict, Node, Run, RunIdea
 from pruner.pruning.scale import to_ten
-from pruner.vault.store import VaultStore, one_line
+from pruner.vault.store import VaultStore, clip, one_line
 from pruner.workspace.paths import PathError
 
 if TYPE_CHECKING:
@@ -107,6 +107,11 @@ def _json(value: Any) -> str:
 
 def _error(message: str) -> str:
     return _json({"error": message})
+
+
+# Soft caps on what the write tools store (later prompts read it back); see SynthesisOutput.
+FINDING_WORDS, FINDING_CHARS = 25, 240
+BRANCH_SUMMARY_WORDS, BRANCH_SUMMARY_CHARS = 40, 360
 
 
 def _schema(properties: dict[str, Any], required: Sequence[str] = ()) -> dict[str, Any]:
@@ -272,7 +277,7 @@ def write_findings_log_tool(ctx: ToolContext) -> Tool:
             return _error(f"unknown node ids: {', '.join(unknown)}")
         family = next((n.family for n in ctx.nodes if n.id == ctx.node_id), None)
         finding = Finding(run_id=ctx.run.id, node_id=ctx.node_id, family=family,
-                          verdict=verdict, text=one_line(text), source="agent_tool",
+                          verdict=verdict, text=clip(text, FINDING_CHARS), source="agent_tool",
                           evidence_node_ids=list(evidence_node_ids or []))  # type: ignore[arg-type]
         ctx.on_finding(finding)
         return _json({"ok": True, "finding_id": finding.id})
@@ -280,7 +285,8 @@ def write_findings_log_tool(ctx: ToolContext) -> Tool:
     return Tool("write_findings_log",
                 "Add one line to the run's shared findings log (what was learned, with the verdict "
                 "and the nodes that show it). Later steps read this log.",
-                _schema({"text": {"type": "string"},
+                _schema({"text": {"type": "string", "description": (
+                             f"one sentence, under {FINDING_WORDS} words")},
                          "verdict": {"type": "string", "enum": list(VERDICTS)},
                          "evidence_node_ids": {"type": "array", "items": {"type": "string"}}},
                         ["text", "verdict"]),
@@ -318,7 +324,7 @@ def write_findings_vault_tool(ctx: ToolContext) -> Tool:
             return _error("no node of this branch has a supported, measured result yet")
         deepest = max(nodes, key=lambda n: n.depth)
         idea = RunIdea(branch=_branch(ctx.nodes, deepest.id), title=one_line(title),
-                       summary=one_line(summary), kind="branch_finding",
+                       summary=clip(summary, BRANCH_SUMMARY_CHARS), kind="branch_finding",
                        confidence=round(float(confidence), 3), node_ids=list(branch_node_ids))
         ctx.on_branch_finding(idea)
         return _json({"ok": True, "idea_id": idea.id})
@@ -327,7 +333,10 @@ def write_findings_vault_tool(ctx: ToolContext) -> Tool:
                 "Write a whole branch's conclusion to the run vault once you are fairly sure of it "
                 "(it needs a supported, measured result on the branch). Give the branch's node "
                 "ids and your confidence from 0 to 1.",
-                _schema({"title": {"type": "string"}, "summary": {"type": "string"},
+                _schema({"title": {"type": "string"},
+                         "summary": {"type": "string", "description": (
+                             f"the branch's conclusion, one sentence, under "
+                             f"{BRANCH_SUMMARY_WORDS} words")},
                          "branch_node_ids": {"type": "array", "items": {"type": "string"}},
                          "confidence": {"type": "number", "minimum": 0, "maximum": 1}},
                         ["title", "summary", "branch_node_ids", "confidence"]),

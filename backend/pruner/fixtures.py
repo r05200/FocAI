@@ -26,7 +26,6 @@ from pruner.core.events import (
     QuestionAsked,
     RunCompleted,
     RunStarted,
-    VaultItemAdded,
     VaultRetrieved,
 )
 from pruner.core.models import (
@@ -223,19 +222,6 @@ def build_fixtures() -> dict[str, Any]:
                              reason="Restored by alice: latency framing is worth checking."),
     })
     ev.emit(NodeUpdated, 30, node=spec, change="restored")
-    correction = VaultItemView(
-        id="v_c1", person="alice", kind="correction",
-        title="[fixture] Correction: latency framing is worth a look",
-        summary="I restored a parked speculative-decoding branch; the latency angle was new.",
-        tags=["speculative-decoding", "latency"], retrieval_count=0, created_at=T0 + 31,
-        source_text="Human override: restore n_spec.")
-    ev.emit(VaultItemAdded, 31, item=correction, edges=[
-        VaultEdge(source="v_c1", target="v_a2", weight=0.81, relation="contradicts",
-                  reason="The restored branch was useful, so the topic was not fully covered."),
-        VaultEdge(source="v_c1", target="v_b2", weight=0.77, relation="agrees",
-                  reason="Both conclude the end-user latency angle is worth keeping."),
-    ])
-    ev.emit(Activity, 31, message="Added your correction to your vault.")
     spec = spec.model_copy(deep=True, update={"status": "running"})
     ev.emit(NodeUpdated, 32, node=spec, change="running")
     spec = spec.model_copy(deep=True, update={

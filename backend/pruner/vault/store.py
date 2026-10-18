@@ -28,7 +28,6 @@ import logging
 import re
 from collections.abc import Collection, Iterable
 from pathlib import Path
-from typing import Literal
 
 import numpy as np
 from pydantic import BaseModel, Field
@@ -97,6 +96,16 @@ def wants_investigation(item: VaultItem) -> bool:
 
 def one_line(text: str) -> str:
     return " ".join(text.split())
+
+
+def clip(text: str, limit: int) -> str:
+    """`text` on one line, cut at a word boundary to at most `limit` characters. A backstop for
+    LLM fields asked to be short: it never fails, so a long reply costs no retry."""
+    text = one_line(text)
+    if len(text) <= limit:
+        return text
+    cut = text[: limit - 1].rsplit(" ", 1)[0] or text[: limit - 1]
+    return cut.rstrip(",;: ") + "…"
 
 
 def unit_vectors(vectors: np.ndarray) -> np.ndarray:
@@ -288,7 +297,7 @@ class VaultStore:
         return [(pool[j], float(sims[j])) for j in order if sims[j] >= threshold]
 
     def delete_item(self, item_id: str) -> bool:
-        """Remove an item and its links (undoing a fork removes what deleted nodes learned)."""
+        """Remove an item and its links."""
         item = self._items.pop(item_id, None)
         if item is None:
             return False
@@ -371,18 +380,6 @@ class VaultStore:
                 summary=one_line(draft.summary), tags=tags, source_text=source,
                 investigate=False,
             )
-            return await self._file(item)
-
-    async def ingest_learned(self, person: str, title: str, summary: str,
-                             source_text: str = "",
-                             kind: Literal["learned", "correction"] = "learned") -> IngestResult:
-        """File something a run learned (kind "learned"), or a person's correction of the run
-        (kind "correction", e.g. restoring a parked branch). The title and summary are already
-        written, so no draft LLM call is made: only the embedding and the link labels."""
-        async with self._lock:
-            item = VaultItem(person=person, kind=kind, title=one_line(title),
-                             summary=one_line(summary),
-                             source_text=(source_text or summary).strip()[:MAX_INGEST_CHARS])
             return await self._file(item)
 
     async def _file(self, item: VaultItem) -> IngestResult:

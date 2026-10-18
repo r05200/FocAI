@@ -1,6 +1,15 @@
 import { create } from 'zustand'
 import * as api from '../api/client'
-import { SAMPLE_DIRECTIVES, SAMPLE_ITEM_IDS, SAMPLE_PEOPLE } from '../fixtures/seed'
+import {
+  isSampleDirectiveTwin,
+  isSampleTwin,
+  SAMPLE_DIRECTIVES,
+  SAMPLE_GRAPH,
+  SAMPLE_ITEM_IDS,
+  SAMPLE_PEOPLE,
+  sampleCardKey,
+  sampleDirectiveKey,
+} from '../fixtures/seed'
 import { isOffline } from '../api/client'
 import type {
   Directive,
@@ -44,7 +53,13 @@ interface VaultState {
   peopleOrder: string[]
   // Sample directives the user deleted (they only exist in the browser).
   hiddenSampleDirectives: string[]
+  // Samples the backend was given a copy of (sampleCardKey / sampleDirectiveKey), kept in this
+  // browser. While the backend is up they are shown as that copy only, even once it is deleted.
+  seededSamples: string[]
   loadRemote: () => Promise<void>
+  // Give the backend its own copy of the sample cards and directives it doesn't have yet (once per
+  // page load, and never again for a sample already copied, so a deleted copy stays deleted).
+  seedBackend: () => Promise<void>
   // Mutations: call the backend and fold the result into `remote`. When the backend is
   // unreachable they fall back to the local-only data below, so the UI keeps working offline.
   createVault: (name: string) => Promise<void>
@@ -76,6 +91,28 @@ const EMPTY: Remote = { status: 'loading', vaults: [], graph: { nodes: [], edges
 
 const localId = () => `local_${Date.now()}`
 
+// The one seeding pass of this page load (see seedBackend).
+let seeding: Promise<void> | null = null
+
+// seededSamples is kept in localStorage; it may be unavailable (private window, blocked storage),
+// and then the samples are simply copied again on the next load.
+const SEEDED_KEY = 'pruner.seededSamples'
+function loadSeeded(): string[] {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(SEEDED_KEY) ?? '[]')
+    return Array.isArray(saved) ? saved.filter((k): k is string => typeof k === 'string') : []
+  } catch {
+    return []
+  }
+}
+function saveSeeded(keys: string[]) {
+  try {
+    localStorage.setItem(SEEDED_KEY, JSON.stringify(keys))
+  } catch {
+    // not kept: see above
+  }
+}
+
 // Add names we haven't seen yet to the end of the order (alphabetical among the new ones).
 const withPeople = (order: string[], names: string[]) => [
   ...order,
@@ -99,6 +136,7 @@ export const useVaultStore = create<VaultState>()((set, get) => ({
   remote: EMPTY,
   // The sample people go first, so Alice and Bob keep their colours whatever else turns up.
   peopleOrder: SAMPLE_PEOPLE,
+  seededSamples: loadSeeded(),
   hiddenSampleDirectives: [],
 
   loadRemote: async () => {
@@ -134,6 +172,56 @@ export const useVaultStore = create<VaultState>()((set, get) => ({
         person: s.person && !SAMPLE_PEOPLE.includes(s.person) && !names.includes(s.person) ? null : s.person,
       }
     })
+    if (graph.status === 'fulfilled' && directives.status === 'fulfilled') void get().seedBackend()
+  },
+
+  seedBackend: () => {
+    seeding ??= (async () => {
+      const { graph, directives } = get().remote
+      const hidden = get().hiddenSampleDirectives
+      const done = (key: string) => {
+        if (get().seededSamples.includes(key)) return
+        const seededSamples = [...get().seededSamples, key]
+        set({ seededSamples })
+        saveSeeded(seededSamples)
+      }
+      // A sample the backend already has (copied from another browser) is marked as copied too.
+      const cards = SAMPLE_GRAPH.nodes.filter((n) => {
+        if (n.kind === 'directive' || get().seededSamples.includes(sampleCardKey(n))) return false
+        if (!graph.nodes.some((item) => isSampleTwin(n, item))) return true
+        done(sampleCardKey(n))
+        return false
+      })
+      const dirs = SAMPLE_DIRECTIVES.filter((d) => {
+        if (hidden.includes(d.id) || get().seededSamples.includes(sampleDirectiveKey(d))) return false
+        if (!directives.some((r) => isSampleDirectiveTwin(d, r))) return true
+        done(sampleDirectiveKey(d))
+        return false
+      })
+      if (cards.length === 0 && dirs.length === 0) return
+      // One at a time: each card is linked to the ones filed before it (the vault LLM labels the
+      // links, so the backend's links are its own, not the samples'). Its title and tags are kept.
+      // Directive cards aren't vault items: their directives are copied below, as directives.
+      for (const n of cards) {
+        if (n.kind === 'directive') continue // filtered out above; this tells TypeScript
+        try {
+          await api.ingestItem({ person: n.person, kind: n.kind, text: n.summary, title: n.title, tags: n.tags })
+          done(sampleCardKey(n))
+        } catch (err) {
+          console.warn(`Could not copy the sample card "${n.title}" to the backend:`, err)
+        }
+      }
+      for (const d of dirs) {
+        try {
+          await api.addDirective({ person: d.person, text: d.text })
+          done(sampleDirectiveKey(d))
+        } catch (err) {
+          console.warn(`Could not copy the sample directive "${d.text}" to the backend:`, err)
+        }
+      }
+      await get().loadRemote()
+    })()
+    return seeding
   },
 
   createVault: async (name) => {

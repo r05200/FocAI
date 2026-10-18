@@ -16,6 +16,7 @@ const MENU_SETTLE_MS = 1200 // after going back, wait for the prompt bar to near
 // "Return to main menu" runs the same motion backwards; the run keeps going.
 // How long the prompt bar takes to move between the middle and the top (its transition below).
 const BAR_MOVE_MS = 1500
+const BAR_H = 54 // the bar's height with one line of text, until it is measured
 
 export default function RunTab({ active }: { active: boolean }) {
   const viewingId = useRunStore((s) => s.viewingId)
@@ -69,6 +70,18 @@ export default function RunTab({ active }: { active: boolean }) {
     return () => ro.disconnect()
   }, [])
   const showList = !started && running.length > 0
+
+  // The prompt bar's real height. It is centred on the main menu, so it grows both ways as the text
+  // wraps (or an error shows), and the heading above and the hint below follow its edges.
+  const bar = useRef<HTMLDivElement>(null)
+  const [barH, setBarH] = useState(BAR_H)
+  useEffect(() => {
+    const el = bar.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setBarH(el.offsetHeight))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
   // Keep the tree mounted while it fades out after leaving, and remount it for each run so the
   // root node's pop-in plays again.
@@ -127,16 +140,21 @@ export default function RunTab({ active }: { active: boolean }) {
         }}
       >
         <h1
-          className={`${fade(!started)} bottom-[calc(50%+56px)] text-center text-[28px] font-semibold`}
+          style={{ bottom: `calc(50% + ${barH / 2 + 29}px)` }}
+          className={`${fade(!started)} text-center text-[28px] font-semibold`}
         >
           What should we research?
         </h1>
-        <p className={`${fade(!started)} top-[calc(50%+44px)] text-center text-xs text-muted`}>
+        <p
+          style={{ top: `calc(50% + ${barH / 2 + 17}px)` }}
+          className={`${fade(!started)} text-center text-xs text-muted`}
+        >
           Describe the question you want researched.
         </p>
 
         {/* The prompt bar: centred on the main menu, 16px from the top once a run is on screen. */}
         <div
+          ref={bar}
           inert={barDisabled || runVaultOpen}
           className={`absolute left-1/2 z-10 w-full px-4 ${started ? 'max-w-[min(48rem,max(320px,calc(100%-400px)))]' : 'max-w-3xl'} transition-[top,transform,opacity] [transition-duration:1500ms,1500ms,300ms] ease-[cubic-bezier(0.65,0,0.35,1)] motion-reduce:duration-0 ${
             barDisabled ? 'pointer-events-none opacity-50' : 'pointer-events-auto'
@@ -181,16 +199,16 @@ export default function RunTab({ active }: { active: boolean }) {
               {i > 0 && <div className="mx-5 border-t border-line" />}
               <button
                 onClick={() => open(r.id)}
-                title="Open this run"
+                title={r.question}
                 className="block w-full px-5 py-3.5 text-left transition-colors hover:bg-hover"
               >
-                <span className="flex items-start gap-2.5">
+                <span className="flex min-w-0 items-start gap-2.5">
                   <span
                     className={`mt-1.5 size-2 shrink-0 rounded-full ${
                       r.life === 'paused' ? 'bg-kind-note' : 'animate-pulse bg-kind-learned'
                     }`}
                   />
-                  <span className="min-w-0 text-sm leading-relaxed wrap-break-word">{r.question}</span>
+                  <span className="min-w-0 truncate text-sm leading-relaxed">{r.question}</span>
                 </span>
                 {(r.life === 'stopping' || r.life === 'paused') && (
                   <span className="mt-1 block pl-4.5 text-xs text-muted">

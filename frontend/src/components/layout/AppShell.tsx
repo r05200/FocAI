@@ -1,4 +1,6 @@
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
+import { MAP_LEAVE_MS } from '../../lib/cameraFly'
+import { useRunStore } from '../../store/runStore'
 import { useVaultStore } from '../../store/vaultStore'
 import { TAB_ORDER, useUiStore, type TabId } from '../../store/uiStore'
 import HistoryTab from '../history/HistoryTab'
@@ -25,6 +27,22 @@ const VIEW_STATE = {
   after: 'pointer-events-none scale-[0.3] opacity-0 blur-sm duration-300',
 }
 
+// Going from one mind map to another (the vault and a run's vault): the maps do the motion
+// themselves (the old one dives in under a cover, the new one is revealed), so the views don't
+// zoom or blur. The old view stays until its dive is over, then the two hand over quickly.
+const MAP_SWITCH_STATE = {
+  shown: 'scale-100 opacity-100 duration-200',
+  hidden: 'pointer-events-none scale-100 opacity-0 duration-200',
+}
+
+// Research <-> History is a plain cut: they sit side by side in the sidebar, and zooming one away
+// (History shrinking to a third on its way back to Research) only made the switch feel slow.
+const DIRECT_STATE = {
+  shown: 'scale-100 opacity-100 duration-0',
+  hidden: 'pointer-events-none scale-100 opacity-0 duration-0',
+}
+const DIRECT_PAIR: TabId[] = ['run', 'history']
+
 const RETRY_REMOTE_MS = 10_000
 
 export default function AppShell() {
@@ -42,6 +60,13 @@ export default function AppShell() {
     return () => clearInterval(t)
   }, [remoteStatus, loadRemote])
   const activeIndex = TAB_ORDER.indexOf(tab)
+  // Which tabs are showing a mind map: the vault, and Research while a run's vault is open.
+  const runVaultShown = useRunStore((s) => s.runVaultOpen && s.viewingId !== null)
+  const showsMap = (id: TabId) => id === 'vault' || (id === 'run' && runVaultShown)
+  const [switched, setSwitched] = useState({ to: tab, from: tab })
+  if (switched.to !== tab) setSwitched({ to: tab, from: switched.to })
+  const mapSwitch = switched.from !== tab && showsMap(switched.from) && showsMap(tab)
+  const direct = switched.from !== tab && DIRECT_PAIR.includes(switched.from) && DIRECT_PAIR.includes(tab)
 
   return (
     <div className="flex h-full">
@@ -49,10 +74,19 @@ export default function AppShell() {
       <main className="relative min-w-0 flex-1 overflow-hidden">
         {TAB_ORDER.map((id, i) => {
           const state = i === activeIndex ? 'active' : i < activeIndex ? 'before' : 'after'
+          const involved = id === tab || id === switched.from
+          const shownOrHidden = state === 'active' ? 'shown' : 'hidden'
+          const look =
+            direct && involved
+              ? DIRECT_STATE[shownOrHidden]
+              : mapSwitch && involved
+                ? MAP_SWITCH_STATE[shownOrHidden]
+                : VIEW_STATE[state]
           return (
             <section
               key={id}
-              className={`absolute inset-0 origin-center transition-[transform,opacity,filter] ease-zoom motion-reduce:transform-none motion-reduce:blur-none ${VIEW_STATE[state]}`}
+              className={`absolute inset-0 origin-center transition-[transform,opacity,filter] ease-zoom motion-reduce:transform-none motion-reduce:blur-none ${look}`}
+              style={mapSwitch && involved ? { transitionDelay: `${MAP_LEAVE_MS}ms` } : undefined}
               aria-hidden={state !== 'active'}
               inert={state !== 'active'}
             >

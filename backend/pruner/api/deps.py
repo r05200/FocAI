@@ -1,10 +1,11 @@
 """Shared singletons for route handlers. Tests swap them with app.dependency_overrides.
 
-There are two LLM instances, each with its own Gemini API key (and so its own quota and token
+There are three LLM instances, each with its own Gemini API key (and so its own quota and token
 usage):
 - get_supporting_llm (GEMINI_API_KEY_SUPPORTING): the vault store, the scorers and the objective
   maker all share it.
 - get_agent_llm (GEMINI_API_KEY_AGENT): the research agent's own LLM (see get_agent).
+- get_fork_agent_llm (GEMINI_API_KEY_FORK_AGENT): the amendment re-rating that forks come from.
 """
 
 from functools import lru_cache
@@ -30,6 +31,11 @@ def get_supporting_llm() -> LLM:
 @lru_cache(maxsize=1)
 def get_agent_llm() -> LLM:
     return LLM(role="agent")
+
+
+@lru_cache(maxsize=1)
+def get_fork_agent_llm() -> LLM:
+    return LLM(role="fork_agent")
 
 
 @lru_cache(maxsize=1)
@@ -69,7 +75,8 @@ def get_agent() -> Agent:
 
 @lru_cache(maxsize=1)
 def get_amend_agent() -> AmendObjectivesAgent:
-    return AmendObjectivesAgent(get_prescorer(), get_run_store())
+    # The amendment re-rating (what a fork is suggested from) runs on the fork agent's own LLM.
+    return AmendObjectivesAgent(PreScorer(get_vault_store(), get_fork_agent_llm()), get_run_store())
 
 
 @lru_cache(maxsize=1)

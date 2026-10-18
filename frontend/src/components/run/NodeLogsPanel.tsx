@@ -52,13 +52,6 @@ export default function NodeLogsPanel({ open, node, entries, source, onClose }: 
         </button>
       </header>
 
-      {source === 'derived' && (
-        <p className="mx-4 mb-2 rounded-lg bg-hover px-3 py-2 text-xs text-muted">
-          The backend doesn’t record step-by-step logs yet, so this is rebuilt from the node’s saved
-          state.
-        </p>
-      )}
-
       <ol className="flex-1 overflow-auto px-4 pb-4">
         {source === 'loading' && <li className="py-6 text-center text-sm text-muted">Loading…</li>}
         {source !== 'loading' && entries.length === 0 && (

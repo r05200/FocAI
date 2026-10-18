@@ -344,9 +344,6 @@ def undo(host: RunManager, state: LiveRun, fork_id: str, confirm_delete: bool) -
     gone = {n.id for n in new}
     for node in new:
         host.store.delete_node_logs(run.id, node.id)
-        if host.vault is not None:
-            for item_id in node.learned_ids:
-                host.vault.delete_item(item_id)
         host._emit(state, NodeRemoved, node_id=node.id)
     current = {n.id: n.model_dump_json() for n in state.nodes}
     state.nodes[:] = [n.model_copy(deep=True) for n in snap.nodes]

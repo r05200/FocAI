@@ -36,12 +36,17 @@ def _env_float(name: str, default: float) -> float:
 @dataclass(frozen=True)
 class Config:
     # --- LLM (provider-swappable; only llm.py reads these) ---
-    # Two keys, so the agent and the supporting calls (vault, scorers, objectives) have separate
-    # quotas. Hidden from repr so a printed Config never shows them.
+    # One key per role, so the agent, the fork agent and the supporting calls (vault, scorers,
+    # objectives) have separate quotas. Hidden from repr so a printed Config never shows them.
     gemini_api_key_agent: str = field(repr=False)
     gemini_api_key_supporting: str = field(repr=False)
-    # The agent's backup: on a 429 its LLM switches to this key and resumes (see llm.py).
+    gemini_api_key_fork_agent: str = field(repr=False)
+    # Backups, tried in order: on a 429 a role's LLM switches to its next key and resumes (see
+    # llm.py). The agent has two (_2, _3); the fork agent and supporting have one (_2).
     gemini_api_key_agent_2: str = field(repr=False)
+    gemini_api_key_agent_3: str = field(repr=False)
+    gemini_api_key_fork_agent_2: str = field(repr=False)
+    gemini_api_key_supporting_2: str = field(repr=False)
     fast_model: str  # scoring and ingestion
     strong_model: str  # planning and synthesis
     embedding_model: str
@@ -137,7 +142,11 @@ def get_config() -> Config:
     return Config(
         gemini_api_key_agent=os.environ.get("GEMINI_API_KEY_AGENT", ""),
         gemini_api_key_supporting=os.environ.get("GEMINI_API_KEY_SUPPORTING", ""),
+        gemini_api_key_fork_agent=os.environ.get("GEMINI_API_KEY_FORK_AGENT", ""),
         gemini_api_key_agent_2=os.environ.get("GEMINI_API_KEY_AGENT_2", ""),
+        gemini_api_key_agent_3=os.environ.get("GEMINI_API_KEY_AGENT_3", ""),
+        gemini_api_key_fork_agent_2=os.environ.get("GEMINI_API_KEY_FORK_AGENT_2", ""),
+        gemini_api_key_supporting_2=os.environ.get("GEMINI_API_KEY_SUPPORTING_2", ""),
         fast_model=_env("FAST_MODEL", "gemini-3.5-flash-lite"),
         strong_model=_env("STRONG_MODEL", "gemini-3.5-flash"),
         embedding_model=_env("EMBEDDING_MODEL", "gemini-embedding-001"),

@@ -7,8 +7,8 @@ run(node) does, after the experiment:
      next action;
   2. code overrides: a failed experiment is "inconclusive"; a refuted result the judge would park
      is parked (restorable) unless a person kept the node, otherwise the node is done;
-  3. the finding goes to the shared findings log, the run vault (an idea) and, when supported or
-     refuted, the run owner's vault as a "learned" item.
+  3. the finding goes to the shared findings log and the run vault (an idea). Nothing is written
+     to a person's vault: a run only reads those.
 A research run (no files) judges the resources its search found instead
 (synthesize_research.md): are they relevant to the objectives?
 The baseline node gets no LLM synthesis: its numbers are what the others are compared with.
@@ -20,9 +20,10 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from pruner.agent.toolloop import AgentSession
+from pruner.agent.tools import FINDING_CHARS, FINDING_WORDS
 from pruner.core import prompts
 from pruner.core.config import Config, get_config
 from pruner.core.llm import LLM, LLMCancelled, LLMError
@@ -41,6 +42,7 @@ from pruner.orchestrator.context import RunView, ancestors, build_context, previ
 from pruner.orchestrator.experiment import compact, describe
 from pruner.pruning import postscorer as post
 from pruner.pruning.postscorer import PostScorer
+from pruner.vault.store import clip
 
 if TYPE_CHECKING:
     from pruner.runs.manager import LiveRun, RunManager
@@ -48,18 +50,36 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+# Soft caps on the fields later prompts carry (findings log, ancestors, run vault). The schema
+# asks for short text so the model writes it short the first time; the validator only trims a
+# runaway reply. No max_length: a hard limit would fail validation and cost a retry.
+MEASURED_WORDS, MEASURED_CHARS = 40, 360
+
+
 class SynthesisOutput(BaseModel):
-    measured: str
+    measured: str = Field(description=f"Numbers and facts only, one sentence, under "
+                                      f"{MEASURED_WORDS} words.")
     explanation: str = ""
     verdict: HypothesisVerdict
     confidence: float = Field(default=0.5, ge=0, le=1)
-    finding: str
+    finding: str = Field(description=f"What was learned, one sentence, under {FINDING_WORDS} "
+                                     f"words.")
     direction: Direction = "unclear"
     next_action: NextAction = "stop"
     next_reason: str = ""
     action_targets: list[str] = Field(default_factory=list)
     action_brief: str = ""
     idea_title: str = ""
+
+    @field_validator("measured")
+    @classmethod
+    def _clip_measured(cls, v: str) -> str:
+        return clip(v, MEASURED_CHARS)
+
+    @field_validator("finding")
+    @classmethod
+    def _clip_finding(cls, v: str) -> str:
+        return clip(v, FINDING_CHARS)
 
 
 def baseline_text(nodes: list[Node]) -> str:
@@ -198,14 +218,3 @@ class SynthesisPhase:
         branch = " > ".join(n.id for n in ancestors(state.nodes, node))
         host._add_idea(state, RunIdea(branch=branch, title=title, summary=s.measured,
                                       node_ids=[node.id]))
-        if s.verdict in ("supported", "refuted") and host.vault is not None:
-            try:
-                learned = await host.vault.ingest_learned(
-                    run.primary_person, title=s.finding,
-                    summary=f"{s.verdict.capitalize()} in run {run.id}: {s.measured}",
-                    source_text=f"{node.full_text()}\n{describe(node.experiment)}")
-                node.learned_ids.append(learned.item.id)  # undoing a fork can remove it
-            except LLMCancelled:  # a stop
-                raise
-            except (LLMError, OSError) as e:  # the vault is a bonus; the run goes on
-                log.warning("could not file the finding of %s in the vault: %s", node.id, e)

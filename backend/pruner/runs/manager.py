@@ -51,7 +51,7 @@ files (the originals if none) and saves the patch, so a half-tried change never 
 
 A person's actions (node_action, orchestrator/human.py): keep, park or restore a node. Applied at
 once, or, on a running node, when its step finishes (_apply_pending at the next boundary or
-rewind). Restoring files a "correction" item in the person's vault in the background.
+rewind). A run never writes to a person's vault: only to its own run vault.
 
 Steering: each instruction is a chip that can be turned off (toggle_instruction). After an
 instruction (once the objectives are amended) or a toggle, an orchestrator run re-rates its tree in
@@ -113,7 +113,6 @@ from pruner.core.events import (
     RunUpdated,
     SuggestionResolved,
     SuggestionsReady,
-    VaultItemAdded,
 )
 from pruner.core.llm import LLMCancelled, LLMError
 from pruner.core.models import (
@@ -408,14 +407,12 @@ class RunManager:
         assert state.level_start is not None
         origin = {n.id: n for n in state.level_start.nodes}
         removed = [n for n in state.nodes if n.id not in origin]
-        undone_learned = [i for n in state.nodes for i in n.learned_ids
-                          if i not in (origin[n.id].learned_ids if n.id in origin else [])]
         before = {n.id: n.model_dump_json() for n in state.nodes}
         state.nodes[:] = [n for n in state.nodes if n.id in origin]
         for node in state.nodes:
             for name in Node.model_fields:
                 setattr(node, name, copy.deepcopy(getattr(origin[node.id], name)))
-        self._undo_step_records(state, removed, undone_learned)
+        self._undo_step_records(state, removed)
         for node in removed:
             state.emitter.emit(NodeRemoved, node_id=node.id)
         for node in state.nodes:
@@ -428,11 +425,10 @@ class RunManager:
                 state.emitter.emit(NodeUpdated, node=node, change="running")
         self._apply_pending(state)
 
-    def _undo_step_records(self, state: LiveRun, removed: list[Node],
-                           learned: list[str]) -> None:
+    def _undo_step_records(self, state: LiveRun, removed: list[Node]) -> None:
         """What an aborted step had recorded besides the tree: the findings, run-vault ideas and
-        dead ends of the nodes it judged (they are recorded again when it re-runs), the logs of
-        the nodes it created (their ids are reused), and what it filed in the person's vault."""
+        dead ends of the nodes it judged (they are recorded again when it re-runs) and the logs of
+        the nodes it created (their ids are reused)."""
         run = state.run
         gone = {n.id for n in removed}
         judged = {n.id for n in state.nodes if n.synthesis is not None}
@@ -457,9 +453,6 @@ class RunManager:
                               and by_id[d.node_id].status in ("parked", "failed")]
         for node in removed:
             self.store.delete_node_logs(run.id, node.id)
-        if self.vault is not None:
-            for item_id in learned:
-                self.vault.delete_item(item_id)
         run.totals.experiments_run = sum(n.experiment is not None for n in state.nodes)
 
     # The fields a change made outside the agent's step may set (copied onto the level start).
@@ -807,7 +800,6 @@ class RunManager:
             self._mirror(state, node)
             state.jobs.append(Job(node.id, "more_experiments",
                                   "A person restored this node: continue from it."))
-        self._file_correction(state, node)
 
     def _apply_pending(self, state: LiveRun) -> None:
         """Apply the actions people took on nodes that were running then, and park the nodes a
@@ -827,28 +819,6 @@ class RunManager:
                 self._mirror(state, node)
                 state.emitter.emit(Activity, node_id=node.id,
                                    message=f"Your {action} on {node.id} was not applied: {e}.")
-
-    def _file_correction(self, state: LiveRun, node: Node) -> None:
-        """In the background: a "correction" item in the person's vault saying they restored
-        this node, so later runs see the judgement was overturned."""
-        if self.vault is None:
-            return
-        vault, run = self.vault, state.run
-        earlier = next((d.reason for d in reversed(state.dead_ends) if d.node_id == node.id),
-                       "")
-
-        async def file() -> None:
-            try:
-                result = await vault.ingest_learned(
-                    run.primary_person, title=f"Restored: {node.summary or node.description}",
-                    summary=(f"{run.primary_person} restored this branch after it was parked in "
-                             f"run {run.id}" + (f" ({earlier})" if earlier else "") + "."),
-                    source_text=node.full_text(), kind="correction")
-                state.emitter.emit(VaultItemAdded, item=result.item, edges=result.edges)
-            except (LLMError, OSError) as e:  # the vault is a bonus; the run goes on
-                log.warning("could not file the correction for %s: %s", node.id, e)
-
-        self._spawn(state, file())
 
     def _offer(self, state: LiveRun, suggestions: list[Suggestion]) -> None:
         """Replace the open suggestions with a new set."""

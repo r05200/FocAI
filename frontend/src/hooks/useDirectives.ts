@@ -1,19 +1,26 @@
 import { useMemo } from 'react'
 import { useVaultStore } from '../store/vaultStore'
-import { SAMPLE_DIRECTIVES } from '../fixtures/seed'
+import { isSampleDirectiveTwin, SAMPLE_DIRECTIVES, sampleDirectiveKey } from '../fixtures/seed'
 import type { Directive } from '../types'
 
 // Every directive, newest first: the sample ones (src/fixtures/seed.ts), plus the backend's
 // (GET /vault/directives, loaded once by the app shell) or, while it's unreachable, whatever was
-// added locally.
+// added locally. A sample the backend has its own copy of is shown as that copy only.
 function useAllDirectives(): Directive[] {
   const { status, directives } = useVaultStore((s) => s.remote)
   const added = useVaultStore((s) => s.addedDirectives)
   const hidden = useVaultStore((s) => s.hiddenSampleDirectives)
+  const seeded = useVaultStore((s) => s.seededSamples)
   return useMemo(() => {
-    const samples = SAMPLE_DIRECTIVES.filter((d) => !hidden.includes(d.id))
-    return [...samples, ...(status === 'ok' ? directives : added)].sort((a, b) => b.created_at - a.created_at)
-  }, [status, directives, added, hidden])
+    const live = status === 'ok' ? directives : added
+    const samples = SAMPLE_DIRECTIVES.filter(
+      (d) =>
+        !hidden.includes(d.id) &&
+        !live.some((r) => isSampleDirectiveTwin(d, r)) &&
+        !(status === 'ok' && seeded.includes(sampleDirectiveKey(d))),
+    )
+    return [...samples, ...live].sort((a, b) => b.created_at - a.created_at)
+  }, [status, directives, added, hidden, seeded])
 }
 
 // Directives from any of the given vaults (OR).

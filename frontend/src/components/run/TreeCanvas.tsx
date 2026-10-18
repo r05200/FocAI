@@ -27,6 +27,9 @@ import ObjectivesChecklist from './ObjectivesChecklist'
 // Delay before the root appears: the prompt bar's move to the top takes 1500ms (see RunTab). Every
 // other node follows it as soon as the backend has it (lib/treeAppear has the whole timing).
 const APPEAR_AFTER_MS = 1500
+// When the layout changes (a new child re-centres its siblings), nodes already on screen glide to
+// their new spot (over 600ms) instead of jumping; the edges follow them.
+const easeInOut = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2)
 
 // How far past the furthest node on each side the view may be panned (flow units, i.e. before zoom).
 const PAN_MARGIN = 2048
@@ -380,22 +383,60 @@ function TreeCanvasView({ runId, question, startedAt, active, live, onOpenRunVau
     if (moved.some((id) => !dragged.has(id))) setDragged((s) => new Set([...s, ...moved]))
     applyNodeChanges(changes)
   }
+  // New nodes go straight to their spot (they pop in there); nodes already on screen keep where they
+  // are for now and glide to the layout's spot in the effect below.
   const [syncedWith, setSyncedWith] = useState(layoutNodes)
   if (syncedWith !== layoutNodes) {
     setSyncedWith(layoutNodes)
     setNodes((prev) =>
       layoutNodes.map((n) => {
         const old = prev.find((o) => o.id === n.id)
-        if (!old) return n
-        return dragged.has(n.id) ? { ...old, data: n.data } : { ...old, position: n.position, data: n.data }
+        return old ? { ...old, data: n.data } : n
       }),
     )
   }
+  const draggedNow = useRef(dragged)
+  useEffect(() => {
+    draggedNow.current = dragged
+  }, [dragged])
+  useEffect(() => {
+    const target = new Map(layoutNodes.map((n) => [n.id, n.position]))
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    // Where each moving node starts: read from the nodes as they are on the first frame (mid-glide
+    // if the layout changed again before the last glide ended, so it carries on from there).
+    let from: Map<string, { x: number; y: number }> | null = null
+    let start = 0
+    let frame = 0
+    let moving = true
+    const step = (time: number) => {
+      start ||= time
+      const k = reduced ? 1 : easeInOut(Math.min(1, (time - start) / 600))
+      setNodes((prev) => {
+        from ??= new Map(prev.map((n) => [n.id, n.position]))
+        const begun = from
+        let changed = false
+        const next = prev.map((n) => {
+          const to = target.get(n.id)
+          const a = begun.get(n.id)
+          if (!to || !a || draggedNow.current.has(n.id)) return n
+          if (n.position.x === to.x && n.position.y === to.y) return n
+          changed = true
+          return { ...n, position: { x: a.x + (to.x - a.x) * k, y: a.y + (to.y - a.y) * k } }
+        })
+        moving = changed
+        // Nothing to move (only the nodes' data changed): keep the same array, so no re-render.
+        return changed ? next : prev
+      })
+      if (k < 1 && moving) frame = requestAnimationFrame(step)
+    }
+    frame = requestAnimationFrame(step)
+    return () => cancelAnimationFrame(frame)
+  }, [layoutNodes, setNodes])
   const edges = useMemo(
     (): TreeEdgeType[] =>
       treeNodes
         .filter((n) => n.parent_id && treeNodes.some((m) => m.id === n.parent_id))
-        .map((n) => {
+        .map((n): TreeEdgeType => {
           const a = appear.get(n.id)
           const state: EdgeState = chosen.has(n.id)
             ? 'chosen'
@@ -416,7 +457,33 @@ function TreeCanvasView({ runId, question, startedAt, active, live, onOpenRunVau
             // The yellow line to a node waiting for a choice goes over everything else.
             zIndex: n.awaiting_choice ? 11 : state === 'chosen' ? 10 : 0,
           }
-        }),
+        })
+        .concat(
+          // A conclusion also gets a line from every node it draws on (supported or not), so its
+          // sources fan into it; the line from its parent is the tree edge above.
+          treeNodes
+            .filter((n) => n.type === 'conclusion')
+            .flatMap((n) => {
+              const a = appear.get(n.id)
+              return (n.combines ?? [])
+                .filter((id) => id !== n.parent_id)
+                .map((id) => treeNodes.find((m) => m.id === id))
+                .filter((m): m is TreeNode => !!m)
+                .map((m): TreeEdgeType => ({
+                  id: `source-${m.id}-${n.id}`,
+                  source: m.id,
+                  target: n.id,
+                  type: 'tree',
+                  data: {
+                    state: m.status === 'parked' ? 'parked' : 'stopped',
+                    appearDelay: a ? popDelay(a) : 0,
+                    drawDelay: a ? drawDelay(a) : null,
+                    pulsing: false,
+                  },
+                  zIndex: 0,
+                }))
+            }),
+        ),
     [treeNodes, appear, chosen, live],
   )
 

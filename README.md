@@ -65,7 +65,20 @@ cd backend && uv run python -m pruner.fixtures
 `tests/test_fixtures.py` fails if the committed JSON is stale. All fixture content is placeholder
 (titles are prefixed `[fixture]`), not the demo corpus.
 
+## Inspiration
+
+The tree search with pruning on both sides of an experiment (a pre-score before it runs, a
+post-score after) is inspired by ToolTree:
+
+> Shuo Yang, Soyeon Caren Han, Yihao Ding, Shuhe Wang and Eduard Hovy. *ToolTree: Efficient LLM
+> Agent Tool Planning via Dual-Feedback Monte Carlo Tree Search and Bidirectional Pruning.*
+> ICLR 2026. [arXiv:2603.12740](https://arxiv.org/abs/2603.12740)
+
+ToolTree plans an LLM agent's tool use with an MCTS-style search, guiding it with pre-execution
+priors and post-execution rewards and pruning weak branches before and after a tool runs. This
+project applies that idea to research hypotheses instead of tool calls.
+
 ## Prior art
 
-Citations are collected in the PRD and must be verified against the original sources before
+Other citations are collected in the PRD and must be verified against the original sources before
 submission; several arXiv IDs are marked unchecked. Not yet written up here.
