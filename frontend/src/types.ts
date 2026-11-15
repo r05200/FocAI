@@ -112,7 +112,6 @@ export interface TokenUsage {
 
 // ---- tree
 
-// FLAG (ignore unless asked): backend class is `Node`; this name differs from the backend.
 export interface TreeNode {
   id: string
   run_id: string

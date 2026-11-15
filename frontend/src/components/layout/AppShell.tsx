@@ -16,7 +16,6 @@ const VIEWS: Record<TabId, (active: boolean) => ReactNode> = {
   settings: (active) => <SettingsTab active={active} />,
 }
 
-// FLAG (ignore unless asked): all tabs stay mounted, so two WebGL canvases exist at once; they pause when hidden.
 // All views stay mounted and are stacked; switching tabs animates scale/opacity so moving
 // down the sidebar feels like flying deeper (e.g. Research -> Vault zooms into the mind map).
 // The switch dips to the background: the old view fades out first, and the new one only starts

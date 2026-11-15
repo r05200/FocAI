@@ -238,7 +238,6 @@ export default function StartRunForm({ ended = false, textHidden = false }: { en
     }
     try {
       const run = await startRun(body)
-      // TODO: open GET /api/runs/{id}/events with an AbortController and pass it to begin().
       begin(run.id, question)
       setPaths([]) // they belonged to that run
       // Every run gets its own vault (the agent's discoveries), saved to disk with the run. Created
@@ -385,7 +384,6 @@ export default function StartRunForm({ ended = false, textHidden = false }: { en
         )}
         {/* Buttons stay vertically centred on the text, however many lines it runs to. */}
         <div className="flex items-center gap-2">
-          {/* Attach menu (placeholder, see FIXME above) */}
           <div ref={menu} className="relative shrink-0">
             <button
               type="button"

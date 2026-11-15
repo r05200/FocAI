@@ -1,9 +1,5 @@
-// FIXME(attachments): NOT WIRED UP. The prompt bar's attach menu is disabled for now (see
-// StartRunForm.tsx), so nothing imports this yet. It holds the checks (type, size, empty,
-// duplicate, max count) to reuse once uploading is built. Open questions before enabling it:
-//   - folders: browsers can't expose a folder's real path, and uploading its contents is
-//     wasteful when the backend can read the disk; probably needs a backend folder-browse route;
-//   - POST /api/runs doesn't accept attachments yet.
+// Checks for the files a person picks in the vault's add-knowledge form: type, size, empty,
+// duplicate and max count.
 
 type AttachKind = 'file' | 'image' | 'folder'
 
@@ -23,7 +19,6 @@ const LIMITS = {
   maxAttachments: 10,
 }
 
-// FLAG (ignore unless asked): accepts PDF/Word/etc., but backend ingest takes text only (PRD: no PDF parsing).
 const DOC_EXTENSIONS = ['pdf', 'txt', 'md', 'markdown', 'doc', 'docx', 'csv', 'json', 'tex', 'html', 'rtf']
 const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg']
 

@@ -7,6 +7,5 @@ import type { RunSnapshot, VaultGraph } from '../types'
 import runSnapshot from './run_snapshot.json'
 import vaultGraph from './vault_graph.json'
 
-// FLAG (ignore unless asked): the `as unknown as` casts hide shape drift, so tsc will not catch a mismatch with the backend.
 export const fixtureSnapshot = runSnapshot as unknown as RunSnapshot
 export const fixtureVaultGraph = vaultGraph as unknown as VaultGraph

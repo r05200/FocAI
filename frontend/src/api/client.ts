@@ -187,7 +187,6 @@ export const undoFork = (runId: string, forkId: string, confirmDelete = false) =
 // Where the run could continue from. Confirm acts on it ("run" runs that node next, "restore"
 // restores it, "expand"/"remeasure" propose from it); dismiss drops it. 409 if the run finished,
 // it was already answered, or it no longer fits.
-export const listSuggestions = (runId: string) => request<Suggestion[]>('GET', `/runs/${id(runId)}/suggestions`)
 export const confirmSuggestion = (runId: string, suggestionId: string) =>
   request<Suggestion>('POST', `/runs/${id(runId)}/suggestions/${id(suggestionId)}/confirm`)
 export const dismissSuggestion = (runId: string, suggestionId: string) =>

@@ -60,12 +60,9 @@ interface RunState {
   runVaultOpen: boolean
   openRunVault: () => void
   closeRunVault: () => void
-  // FLAG (ignore unless asked): `error` is set on a failed stop but nothing renders it, and it is cleared right after.
   error: string | null
-  // Held per run so Stop can cut its live event stream (SSE) the moment it's pressed.
-  streams: Record<string, AbortController>
   // Start tracking a run and show it.
-  begin: (runId: string, question: string, streamAbort?: AbortController) => void
+  begin: (runId: string, question: string) => void
   // Stop the run on screen (or the given one).
   stop: (runId?: string) => Promise<void>
   // Hold the run's agent before its next step / let it carry on. Throw when the backend refuses
@@ -170,9 +167,8 @@ export const useRunStore = create<RunState>()((set, get) => ({
   viewingId: null,
   runVaultOpen: false,
   error: null,
-  streams: {},
 
-  begin: (runId, question, streamAbort) =>
+  begin: (runId, question) =>
     set((s) => ({
       // A poll (syncRuns) may have picked the new run up already: replace that entry, don't add a second.
       runs: [...s.runs.filter((r) => r.id !== runId), { id: runId, question, life: 'running', startedAt: Date.now() }],
@@ -184,17 +180,14 @@ export const useRunStore = create<RunState>()((set, get) => ({
       // The question just sent was the draft: nothing to bring back.
       prompt: '',
       mainDraft: '',
-      streams: streamAbort ? { ...s.streams, [runId]: streamAbort } : s.streams,
     })),
 
-  // FLAG (ignore unless asked): comment says 'cancelled', but RunStatus has no cancelled state and no cancel event exists.
   stop: async (runId) => {
     const id = runId ?? get().viewingId
     const run = get().runs.find((r) => r.id === id)
     if (!id || (run?.life !== 'running' && run?.life !== 'paused')) return
     const before = run!.life
     set((s) => ({ runs: setLife(s.runs, id, 'stopping') }))
-    get().streams[id]?.abort() // stop listening locally, so the UI freezes on the last event
     // Tell the backend to kill the run (this is what actually halts the LLM). A run only in the
     // browser ends here at once; so does one the backend says is already over (409) or doesn't
     // know any more (404).
@@ -215,12 +208,7 @@ export const useRunStore = create<RunState>()((set, get) => ({
   pause: (runId) => hold(get, set, runId, true, pauseRun),
   resume: (runId) => hold(get, set, runId, false, resumeRun),
 
-  finish: (runId) =>
-    set((s) => {
-      const streams = { ...s.streams }
-      delete streams[runId]
-      return { runs: setLife(s.runs, runId, 'ended'), streams }
-    }),
+  finish: (runId) => set((s) => ({ runs: setLife(s.runs, runId, 'ended') })),
 
   leave: () => set((s) => ({ viewingId: null, runVaultOpen: false, prompt: s.mainDraft, mainDraft: '' })),
   open: (runId) => set((s) => ({ viewingId: runId, runVaultOpen: false, ...setDraftAside(s) })),

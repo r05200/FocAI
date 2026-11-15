@@ -182,16 +182,6 @@ export function FileIcon(props: SVGProps<SVGSVGElement>) {
   )
 }
 
-export function ImageIcon(props: SVGProps<SVGSVGElement>) {
-  return (
-    <Svg width={16} height={16} {...props}>
-      <rect x="3" y="4" width="18" height="16" rx="2" />
-      <circle cx="9" cy="10" r="1.6" />
-      <path d="m21 16-5-5-9 9" />
-    </Svg>
-  )
-}
-
 export function CheckIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <Svg width={14} height={14} strokeWidth={2.4} {...props}>
